@@ -1,0 +1,147 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Pick and boot a simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          d = json.load(sys.stdin)["devices"]
+          rts = sorted([k for k in d if ".iOS-" in k], key=lambda k: [int(x) for x in k.split(".iOS-")[1].split("-")])
+          for rt in reversed(rts):
+              for dev in d[rt]:
+                  if dev["name"].startswith("iPhone 17"):
+                      print(dev["udid"]); sys.exit()
+          ')
+          echo "Simulator $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Build for testing
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing -project ExplorerConnect.xcodeproj -scheme ExplorerConnect \
+            -destination "id=$UDID" -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO | tee build.log | xcbeautify || (grep -E "error:|warning: .*Swift" build.log | head -80; exit 1)
+
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test-without-building -project ExplorerConnect.xcodeproj -scheme ExplorerConnect \
+            -destination "id=$UDID" -derivedDataPath build \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 60 -maximum-test-execution-time-allowance 120 \
+            -resultBundlePath TestResults.xcresult 2>&1 | tee test.log | xcbeautify
+
+      - name: Test output
+        if: always()
+        run: |
+          grep -E "^(OK |AUDIT )|error:|failed|passed|skipped" test.log | head -300 || true
+
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: |
+            TestResults.xcresult
+            build.log
+            test.log
+
+  ipa:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build unsigned IPA
+        run: |
+          set -o pipefail
+          xcodebuild build -project ExplorerConnect.xcodeproj -scheme ExplorerConnect -configuration Release \
+            -sdk iphoneos -destination generic/platform=iOS -derivedDataPath build \
+            MARKETING_VERSION=1.0.${{ github.run_number }} CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tee build.log | xcbeautify || (grep -E "error:" build.log | head -80; exit 1)
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/ExplorerConnect.app Payload/
+          zip -qry ExplorerConnect.ipa Payload
+          ls -la ExplorerConnect.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExplorerConnect-ipa
+          path: ExplorerConnect.ipa
+
+  release:
+    needs: [test, ipa]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ExplorerConnect-ipa
+      - name: SideStore source
+        run: |
+          python3 - <<'EOF'
+          import json, os, datetime
+          run = os.environ["GITHUB_RUN_NUMBER"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          source = {
+            "name": "Explorer Connect",
+            "identifier": "com.conner.explorerconnect.source",
+            "subtitle": "Browse and play your laptop's files",
+            "apps": [{
+              "name": "Explorer Connect",
+              "bundleIdentifier": "com.conner.explorerconnect",
+              "developerName": "Conner Erwin",
+              "subtitle": "Browse and play your laptop's files",
+              "localizedDescription": "Browse your Windows laptop's drives from your iPhone over Tailscale, play its music in the background, and open its documents, pictures and videos. Pairs with Explorer Native for Windows.",
+              "iconURL": f"https://raw.githubusercontent.com/{repo}/main/Sources/Assets.xcassets/AppIcon.appiconset/icon.png",
+              "tintColor": "1E5AA8",
+              "category": "utilities",
+              "versions": [{
+                "version": f"1.0.{run}",
+                "buildVersion": run,
+                "date": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "localizedDescription": f"Build {run}",
+                "downloadURL": f"https://github.com/{repo}/releases/download/latest/ExplorerConnect.ipa",
+                "size": os.path.getsize("ExplorerConnect.ipa"),
+                "minOSVersion": "17.0"
+              }],
+              "appPermissions": {
+                "entitlements": [],
+                "privacy": {"NSLocalNetworkUsageDescription": "Explorer Connect connects to your computer to browse and play its files."}
+              }
+            }],
+            "news": []
+          }
+          json.dump(source, open("source.json", "w"), indent=2)
+          EOF
+          cat source.json
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create latest ExplorerConnect.ipa source.json --repo "$GITHUB_REPOSITORY" --title "Latest build (${GITHUB_RUN_NUMBER})" \
+            --notes "Build ${GITHUB_RUN_NUMBER} from ${GITHUB_SHA::7}. Install ExplorerConnect.ipa with iloader or SideStore, or add source.json to SideStore." --target "$GITHUB_SHA"
