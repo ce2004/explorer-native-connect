@@ -80,13 +80,11 @@ struct SettingsView: View {
                         }
                     }
                     .disabled(model.updater.checking)
-                    if let available = model.updater.available {
-                        Button("Install version \(available.version)") {
-                            Task { _ = await model.updater.install() }
-                        }
-                    }
                     if let result = model.updater.lastResult {
                         Text(result)
+                    }
+                    if let signed = model.updater.signedText {
+                        Text(signed)
                     }
                 } header: {
                     Text("Updates").accessibilityAddTraits(.isHeader)

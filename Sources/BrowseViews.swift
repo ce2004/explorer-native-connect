@@ -418,7 +418,7 @@ struct FolderView: View {
                 Announce.say("\(e.name): \(size.spoken)")
             } catch {
                 model.noteFailure(error)
-                Announce.say(ConnectError.message(for: error))
+                Announce.say(ConnectError.sizeMessage(for: error, name: e.name))
             }
         }
     }

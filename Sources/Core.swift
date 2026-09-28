@@ -280,10 +280,17 @@ struct FolderSize: Decodable, Equatable {
     }
 
     /// "4.2 GB" or "at least 4.2 GB".
-    var short: String { (complete ? "" : "at least ") + Format.size(bytes) }
+    /// A drive root measures the account quota: bytes used, no counts.
+    var isQuota: Bool { !complete && files == 0 && folders == 0 }
+
+    var short: String {
+        if isQuota { return "\(Format.size(bytes)) used" }
+        return (complete ? "" : "at least ") + Format.size(bytes)
+    }
 
     /// "4.2 GB, 1,203 files, 45 folders", prefixed "at least" when the walk ran out of time.
     var spoken: String {
+        if isQuota { return short }
         "\(short), \(Format.count(files, "file", "files")), \(Format.count(folders, "folder", "folders"))"
     }
 }
@@ -354,7 +361,10 @@ struct FileStat: Decodable, Equatable {
             r.append(("Size", size < 1024 ? Format.size(size) : "\(Format.size(size)), \(exact) bytes"))
         }
         if let modified { r.append(("Modified", Format.date(modified))) }
-        if let created { r.append(("Created", Format.date(created))) }
+        // Drive reports created as the same moment as modified; only show it when it says something.
+        if let created, abs(created.timeIntervalSince(modified ?? .distantPast)) > 1 {
+            r.append(("Created", Format.date(created)))
+        }
         r.append(("Read-only", readOnly ? "Yes" : "No"))
         r.append(("On Google Drive", onDrive ? "Yes" : "No"))
         if let t = tags {

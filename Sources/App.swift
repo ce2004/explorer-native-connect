@@ -33,10 +33,20 @@ struct RootView: View {
             }
         }
         .accessibilityAction(.magicTap) { model.player.togglePlayPause() }
+        .task {
+            // Once per launch, after VoiceOver has settled on the first screen.
+            guard let warning = model.updater.expiryWarning else { return }
+            try? await Task.sleep(for: .seconds(2))
+            Announce.say(warning)
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: model.appBecameActive()
-            case .background: model.player.save()
+            case .active:
+                model.transfers.appCameToFront()
+                model.appBecameActive()
+            case .background:
+                model.player.save()
+                model.transfers.appWentToBackground()
             default: break
             }
         }

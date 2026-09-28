@@ -45,7 +45,7 @@ jobs:
 
       - name: Start the fake Explorer Native server
         run: |
-          nohup python3 Tests/Server/fake_server.py --port 47810 > fake_server.log 2>&1 &
+          nohup python3 Tests/Server/fake_server.py --port 47810 --verbose > fake_server.log 2>&1 &
           for i in $(seq 1 40); do
             curl -sf -H "X-Connect-Code: 12345678" http://127.0.0.1:47810/api/info && break
             sleep 0.5

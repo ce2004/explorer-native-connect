@@ -29,7 +29,9 @@ final class ExplorerConnectUITests: XCTestCase {
     private func audit(_ app: XCUIApplication, _ screen: String) throws {
         try app.performAccessibilityAudit { issue in
             let text = issue.compactDescription.lowercased()
-            let ignorable = text.contains("nearly") || text.contains("partially") || issue.auditType == .contrast
+            // File names ("notes.txt") are what they are; the audit calls them not human-readable.
+            let ignorable = text.contains("nearly") || text.contains("partially") || text.contains("human-readable")
+                || issue.auditType == .contrast
             print("AUDIT \(screen) \(ignorable ? "ignored" : "FAIL"): \(issue.compactDescription) | \(issue.detailedDescription) | \(issue.element?.debugDescription ?? "no element")")
             return ignorable
         }

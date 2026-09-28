@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UIKit
 
 /// One file going to or from the laptop. Saved to disk so transfers survive the app being closed.
 struct TransferRecord: Codable, Identifiable, Equatable {
@@ -91,7 +92,23 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     var backgroundCompletion: (() -> Void)?
 
     private let lock = NSLock()
-    private var finishedFiles: [Int: URL] = [:]
+    private var finishedFiles: [ObjectIdentifier: URL] = [:]
+    private var _useBackground = false
+
+    /// While the app is in front, chunks go through an ordinary session (quick to start, and reliable in the
+    /// simulator); once it goes to the background they go through the background session, which iOS keeps running.
+    var useBackground: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _useBackground }
+        set { lock.lock(); _useBackground = newValue; lock.unlock() }
+    }
+
+    lazy var foreground: URLSession = {
+        let c = URLSessionConfiguration.default
+        c.timeoutIntervalForRequest = 60
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.httpMaximumConnectionsPerHost = 4
+        return URLSession(configuration: c, delegate: self, delegateQueue: nil)
+    }()
 
     lazy var session: URLSession = {
         let c = URLSessionConfiguration.background(withIdentifier: Self.identifier)
@@ -110,21 +127,32 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     }
 
     func start(_ request: URLRequest, id: String, chunkStart: Int64) {
-        let task = session.downloadTask(with: request)
+        let task = (useBackground ? session : foreground).downloadTask(with: request)
         task.taskDescription = "\(id)|\(chunkStart)"
         task.resume()
     }
 
     func cancel(_ id: String) {
-        session.getAllTasks { tasks in
-            for t in tasks where Self.parse(t.taskDescription)?.0 == id { t.cancel() }
+        for s in [session, foreground] {
+            s.getAllTasks { tasks in
+                for t in tasks where Self.parse(t.taskDescription)?.0 == id { t.cancel() }
+            }
         }
+    }
+
+    /// Stops the chunks running in the ordinary session (the app is going to the background); returns their ids so
+    /// they can be asked for again through the background session.
+    func cancelForeground() async -> Set<String> {
+        let tasks = await foreground.allTasks
+        for t in tasks { t.cancel() }
+        return Set(tasks.compactMap { Self.parse($0.taskDescription)?.0 })
     }
 
     /// Transfer ids with a chunk still in flight (after a relaunch).
     func activeIDs() async -> Set<String> {
-        let tasks = await session.allTasks
-        return Set(tasks.compactMap { Self.parse($0.taskDescription)?.0 })
+        let a = await session.allTasks
+        let b = await foreground.allTasks
+        return Set((a + b).compactMap { Self.parse($0.taskDescription)?.0 })
     }
 
     static func parse(_ description: String?) -> (String, Int64)? {
@@ -143,7 +171,7 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         let dest = Self.chunkFolder.appendingPathComponent(UUID().uuidString)
         if (try? FileManager.default.moveItem(at: location, to: dest)) != nil {
             lock.lock()
-            finishedFiles[downloadTask.taskIdentifier] = dest
+            finishedFiles[ObjectIdentifier(downloadTask)] = dest
             lock.unlock()
         }
     }
@@ -152,7 +180,7 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         guard let parsed = Self.parse(task.taskDescription) else { return }
         let (id, start) = parsed
         lock.lock()
-        let file = finishedFiles.removeValue(forKey: task.taskIdentifier)
+        let file = finishedFiles.removeValue(forKey: ObjectIdentifier(task))
         lock.unlock()
         let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         onChunk?(id, start, error == nil ? file : nil, status, error)
@@ -221,6 +249,7 @@ final class TransferCenter {
         }
         // Reconnect to the background session so chunks that finished while we were away get reported.
         _ = engine.session
+        engine.useBackground = UIApplication.shared.applicationState == .background
     }
 
     /// After launch: pick up whatever was running.
@@ -235,6 +264,19 @@ final class TransferCenter {
                 }
             }
         }
+    }
+
+    /// The app went to the background: move running downloads onto the background session so they carry on.
+    func appWentToBackground() {
+        engine.useBackground = true
+        Task {
+            let moved = await engine.cancelForeground()
+            for id in moved where record(id)?.state == .running { requestNextChunk(id) }
+        }
+    }
+
+    func appCameToFront() {
+        engine.useBackground = false
     }
 
     /// The laptop is back: retry anything that was waiting for it.
@@ -530,6 +572,13 @@ final class TransferCenter {
                 removeStaged(r)
                 retryDelay[id] = nil
                 finished(id, "Sent \(r.name).")
+            case .incomplete(let received):
+                // Some bytes went missing on the way; pick up from what the laptop has.
+                update(id) {
+                    $0.state = .running
+                    $0.done = received
+                }
+                if !Task.isCancelled { startUploadWorker(id) }
             case .job(let jobID):
                 update(id) {
                     $0.jobID = jobID

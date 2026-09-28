@@ -51,7 +51,7 @@ struct DetailsView: View {
                 do {
                     size = try await model.sizes.fetch(path, client: client)
                 } catch {
-                    sizeError = ConnectError.message(for: error)
+                    sizeError = ConnectError.sizeMessage(for: error, name: entry.name)
                 }
             }
         }

@@ -360,7 +360,8 @@ class Handler(BaseHTTPRequestHandler):
             raise HTTPError(404, "No such upload.")
         part = os.path.join(PARTIALS, uid)
         if os.path.getsize(part) != up["size"]:
-            raise HTTPError(400, "The upload isn't complete.")
+            self.send_json(409, {"error": "The upload isn't complete.", "received": os.path.getsize(part)})
+            return
         folder = local(up["folder"])
         target = os.path.join(folder, up["name"])
         if os.path.exists(target):

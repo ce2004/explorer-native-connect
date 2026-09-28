@@ -23,7 +23,6 @@ targets:
         CFBundleDisplayName: Explorer Connect
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        LSApplicationQueriesSchemes: [sidestore]
         NSLocalNetworkUsageDescription: Explorer Connect connects to your computer to browse and play its files.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

@@ -94,6 +94,12 @@ enum ConnectError: LocalizedError, Equatable {
         (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 
+    /// What to say when a folder can't be measured: Drive gives up on huge folders with a 500.
+    static func sizeMessage(for error: Error, name: String) -> String {
+        if case .server(500, _)? = error as? ConnectError { return "\(name) is too big to measure." }
+        return message(for: error)
+    }
+
     static func isConnectionProblem(_ error: Error) -> Bool {
         (error as? ConnectError)?.isConnectionProblem ?? false
     }
@@ -255,6 +261,8 @@ struct ConnectClient: Sendable {
     enum FinishResult: Equatable {
         case path(String)
         case job(String)
+        /// The laptop hasn't got every byte yet; carry on sending from here.
+        case incomplete(Int64)
     }
 
     func uploadStart(folder: String, name: String, size: Int64, conflict: Conflict) async throws -> String {
@@ -301,6 +309,9 @@ struct ConnectClient: Sendable {
         let (data, response) = try await Self.perform(r, host: host)
         if let job = try? JSONDecoder().decode(JobStarted.self, from: data), (response as? HTTPURLResponse)?.statusCode == 202 {
             return .job(job.job)
+        }
+        if (response as? HTTPURLResponse)?.statusCode == 409, let got = try? JSONDecoder().decode(Received.self, from: data) {
+            return .incomplete(got.received)
         }
         let p: PathResult = try Self.decode(data, response)
         return .path(p.path)

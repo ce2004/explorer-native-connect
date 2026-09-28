@@ -118,6 +118,18 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(partial.spoken, "at least 4 GB, 1,203 files, 45 folders")
         let whole = FolderSize(path: "G:\\Small", bytes: 1024, files: 1, folders: 1, complete: true)
         XCTAssertEqual(whole.spoken, "1 KB, 1 file, 1 folder")
+        let quota = FolderSize(path: "G:\\", bytes: 5 * 1_073_741_824, files: 0, folders: 0, complete: false)
+        XCTAssertEqual(quota.spoken, "5 GB used", "a Drive root reports the quota, not counts")
+        XCTAssertEqual(ConnectError.sizeMessage(for: ConnectError.server(500, "Timed out."), name: "Photos"), "Photos is too big to measure.")
+        XCTAssertEqual(ConnectError.sizeMessage(for: ConnectError.wrongCode, name: "Photos"), "Wrong pairing code.")
+    }
+
+    func testDriveStatHidesCreatedWhenItIsJustModified() throws {
+        let json = #"{"path":"G:\\a.txt","name":"a.txt","folder":false,"size":1,"modified":"2026-09-28T12:00:00Z","created":"2026-09-28T12:00:00Z","readOnly":false,"onDrive":true}"#
+        let stat = try JSONDecoder().decode(FileStat.self, from: Data(json.utf8))
+        XCTAssertFalse(stat.rows.contains { $0.0 == "Created" })
+        XCTAssertTrue(stat.rows.contains { $0.0 == "Modified" })
+        XCTAssertTrue(stat.rows.contains { $0.0 == "On Google Drive" && $0.1 == "Yes" })
     }
 
     func testFileKinds() {
@@ -386,6 +398,39 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(back.index, 0)
         XCTAssertEqual(back.position, 42.5)
         XCTAssertTrue(back.playing)
+    }
+}
+
+final class UpdateTests: XCTestCase {
+    func testUpdateText() {
+        XCTAssertEqual(Updater.resultText(latest: 12, current: 10), "Build 12 is available. Install it from the PC with iloader.")
+        XCTAssertEqual(Updater.resultText(latest: 10, current: 10), "Explorer Connect is up to date.")
+    }
+
+    func testProvisioningProfileExpiry() throws {
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>ExpirationDate</key><date>2026-10-05T12:00:00Z</date><key>Name</key><string>x</string></dict></plist>
+        """
+        var blob = Data([0x30, 0x82, 0x01, 0x00, 0xFF, 0x00])
+        blob.append(Data(plist.utf8))
+        blob.append(Data([0x00, 0xA0, 0x82, 0x55]))
+        let date = try XCTUnwrap(ProvisionInfo.expiration(from: blob))
+        XCTAssertEqual(date, ISO8601DateFormatter().date(from: "2026-10-05T12:00:00Z"))
+        XCTAssertNil(ProvisionInfo.expiration(from: Data("no plist here".utf8)))
+    }
+
+    func testExpiryWarning() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertNil(ProvisionInfo.warning(expires: now.addingTimeInterval(3 * 86_400), now: now))
+        XCTAssertNil(ProvisionInfo.warning(expires: nil, now: now))
+        XCTAssertEqual(ProvisionInfo.warning(expires: now.addingTimeInterval(20 * 3600), now: now),
+                       "Explorer Connect expires in 1 day. Reinstall it from the PC.")
+        XCTAssertEqual(ProvisionInfo.warning(expires: now.addingTimeInterval(40 * 3600), now: now),
+                       "Explorer Connect expires in 2 days. Reinstall it from the PC.")
+        XCTAssertEqual(ProvisionInfo.warning(expires: now.addingTimeInterval(-10), now: now),
+                       "Explorer Connect's signature has expired. Reinstall it from the PC.")
     }
 }
 
