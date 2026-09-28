@@ -336,6 +336,77 @@ struct ConnectClient: Sendable {
         let received: Int64
     }
 
+    // Clipboard (v2.2)
+
+    func clipboard() async throws -> ClipboardState {
+        try await send("clipboard", timeout: 15)
+    }
+
+    /// Long poll: comes back when the clipboard changes, or after about 25 seconds as it was.
+    func clipboardWait(since seq: Int64) async throws -> ClipboardState {
+        try await send("clipboard/wait", query: [("since", String(seq))], timeout: 45)
+    }
+
+    func clipboardImage() async throws -> Data {
+        guard let url = url("clipboard/image") else { throw ConnectError.badComputerName }
+        let (data, response) = try await Self.perform(request(url, timeout: 30), host: host)
+        if let failure = ConnectError.from(status: (response as? HTTPURLResponse)?.statusCode ?? 0) { throw failure }
+        return data
+    }
+
+    @discardableResult
+    func setClipboard(text: String) async throws -> Int64 {
+        let r: SeqResult = try await send("clipboard", method: "POST", body: ["text": text])
+        return r.seq ?? 0
+    }
+
+    func setClipboard(image: Data, contentType: String) async throws {
+        guard let url = url("clipboard/image") else { throw ConnectError.badComputerName }
+        var r = request(url, timeout: 60)
+        r.httpMethod = "POST"
+        r.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        r.httpBody = image
+        let (data, response) = try await Self.perform(r, host: host)
+        let _: Ignored = try Self.decode(data, response)
+    }
+
+    /// Puts files that are on the laptop on its clipboard, so Ctrl+V pastes them there.
+    func copyOnPC(_ paths: [String]) async throws {
+        let _: Ignored = try await send("clipboard/files", method: "POST", body: ["paths": paths])
+    }
+
+    func clipboardHistory() async throws -> [ClipboardItem] {
+        try await send("clipboard/history", timeout: 15)
+    }
+
+    func clearClipboardHistory() async throws {
+        let _: Ignored = try await send("clipboard/history/clear", method: "POST", body: [String: String]())
+    }
+
+    /// Sends one phone file for the PC clipboard; with a batch, it waits for `commitClipboardSend`.
+    func clipboardSendRequest(name: String, batch: String?) -> URLRequest? {
+        var query = [("name", name)]
+        if let batch { query.append(("batch", batch)) }
+        guard let url = url("clipboard/send", query: query) else { return nil }
+        var r = request(url, timeout: 120)
+        r.httpMethod = "POST"
+        r.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        return r
+    }
+
+    func commitClipboardSend(batch: String) async throws {
+        let _: Ignored = try await send("clipboard/send/commit", method: "POST", body: ["batch": batch])
+    }
+
+    /// Any JSON (or none) is fine; only the status matters.
+    struct Ignored: Decodable {
+        init(from decoder: Decoder) throws {}
+    }
+
+    private struct SeqResult: Decodable {
+        let seq: Int64?
+    }
+
     func uploadRequest(folder: String, name: String, conflict: Conflict) -> URLRequest? {
         guard let url = url("upload", query: [("folder", folder), ("name", name), ("conflict", conflict.rawValue)]) else { return nil }
         var r = request(url, timeout: 120)

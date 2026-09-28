@@ -291,7 +291,7 @@ struct FolderSize: Decodable, Equatable {
     /// "4.2 GB, 1,203 files, 45 folders", prefixed "at least" when the walk ran out of time.
     var spoken: String {
         if isQuota { return short }
-        "\(short), \(Format.count(files, "file", "files")), \(Format.count(folders, "folder", "folders"))"
+        return "\(short), \(Format.count(files, "file", "files")), \(Format.count(folders, "folder", "folders"))"
     }
 }
 
@@ -814,6 +814,101 @@ enum TransferMath {
             if !taken(candidate) { return candidate }
             n += 1
         }
+    }
+}
+
+// MARK: - Clipboard
+
+/// What the PC clipboard holds.
+struct ClipboardState: Decodable, Equatable {
+    var seq: Int64
+    var kind: String
+    var text: String?
+    var files: [String]?
+    var imageBytes: Int64?
+
+    private enum Keys: String, CodingKey { case seq, kind, text, files, imageBytes }
+
+    init(seq: Int64, kind: String, text: String? = nil, files: [String]? = nil, imageBytes: Int64? = nil) {
+        self.seq = seq
+        self.kind = kind
+        self.text = text
+        self.files = files
+        self.imageBytes = imageBytes
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        seq = (try? c.decodeIfPresent(Int64.self, forKey: .seq)) ?? 0
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "empty"
+        text = try? c.decodeIfPresent(String.self, forKey: .text)
+        files = try? c.decodeIfPresent([String].self, forKey: .files)
+        imageBytes = try? c.decodeIfPresent(Int64.self, forKey: .imageBytes)
+    }
+}
+
+/// One entry in the PC clipboard's history.
+struct ClipboardItem: Decodable, Equatable, Identifiable {
+    var seq: Int64
+    var kind: String
+    var text: String?
+    var files: [String]?
+    var time: Date?
+
+    var id: Int64 { seq }
+
+    private enum Keys: String, CodingKey { case seq, kind, text, files, time }
+
+    init(seq: Int64, kind: String, text: String? = nil, files: [String]? = nil, time: Date? = nil) {
+        self.seq = seq
+        self.kind = kind
+        self.text = text
+        self.files = files
+        self.time = time
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        seq = (try? c.decodeIfPresent(Int64.self, forKey: .seq)) ?? 0
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "empty"
+        text = try? c.decodeIfPresent(String.self, forKey: .text)
+        files = try? c.decodeIfPresent([String].self, forKey: .files)
+        time = (try? c.decodeIfPresent(String.self, forKey: .time)).flatMap { ISODate.parse($0) }
+    }
+}
+
+enum ClipText {
+    /// The first `limit` characters with runs of whitespace (newlines too) squeezed to one space.
+    static func preview(_ text: String, limit: Int = 60) -> String {
+        let squeezed = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard squeezed.count > limit else { return squeezed }
+        return String(squeezed.prefix(limit)) + "…"
+    }
+
+    /// "3 files: a.txt, b.flac and 1 more"
+    static func files(_ paths: [String]) -> String {
+        let names = paths.map { RemotePath.lastComponent($0) }
+        guard !names.isEmpty else { return "No files" }
+        if names.count == 1 { return "1 file: \(names[0])" }
+        let shown = names.prefix(2).joined(separator: ", ")
+        let more = names.count - 2
+        return "\(names.count) files: " + (more > 0 ? "\(shown) and \(more) more" : shown)
+    }
+
+    /// One line for a history row or an announcement.
+    static func summary(kind: String, text: String?, files: [String]?) -> String {
+        switch kind {
+        case "text": return preview(text ?? "")
+        case "files": return self.files(files ?? [])
+        case "image": return "An image"
+        default: return "Empty"
+        }
+    }
+
+    /// "PC clipboard: <first 60 characters>", or nil when there's nothing worth saying.
+    static func announcement(_ state: ClipboardState) -> String? {
+        guard state.kind != "empty" else { return nil }
+        return "PC clipboard: " + summary(kind: state.kind, text: state.text, files: state.files)
     }
 }
 
