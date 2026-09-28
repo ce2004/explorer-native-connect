@@ -6,6 +6,18 @@ struct OpenFile: Identifiable {
     let path: String
     let name: String
     let size: Int64
+    /// Opens the share sheet as soon as the download finishes.
+    var share = false
+}
+
+struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 /// Downloads a file, then shows it with Quick Look. Share saves it to Files or sends it elsewhere.
@@ -14,6 +26,7 @@ struct FileOpenView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var downloader = Downloader()
+    @State private var showShare = false
 
     private var doneURL: URL? {
         if case .done(let url) = downloader.phase { return url }
@@ -66,6 +79,14 @@ struct FileOpenView: View {
         }
         .onDisappear {
             downloader.cancel()
+        }
+        .onChange(of: downloader.phase) { _, phase in
+            if case .done = phase, file.share { showShare = true }
+        }
+        .sheet(isPresented: $showShare) {
+            if let url = doneURL {
+                ActivityView(items: [url])
+            }
         }
         .accessibilityAction(.magicTap) { model.player.togglePlayPause() }
     }

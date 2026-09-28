@@ -35,7 +35,7 @@ final class Downloader {
 
     func start(path: String, name: String, size: Int64, client: ConnectClient) {
         guard task == nil else { return }
-        expected = size
+        expected = max(size, 0)
         guard let url = client.fileURL(path) else {
             fail(ConnectError.badComputerName.errorDescription ?? "")
             return
@@ -43,11 +43,12 @@ final class Downloader {
         let dir = Self.folder.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let dest = dir.appendingPathComponent(name.isEmpty ? "file" : name)
         let host = client.host
-        let task = URLSession.shared.downloadTask(with: client.request(url)) { [weak self] temp, response, error in
+        let task = ConnectClient.session.downloadTask(with: client.request(url, timeout: 60)) { [weak self] temp, response, error in
             let outcome: Phase
             if let error {
                 if (error as? URLError)?.code == .cancelled { return }
-                outcome = .failed(ConnectError.unreachable(host).errorDescription ?? "")
+                let e = (error as? URLError).map { ConnectError.from(urlError: $0, host: host) } ?? ConnectError.notAnswering(host)
+                outcome = .failed(e.errorDescription ?? "")
             } else if let http = response as? HTTPURLResponse, let failure = ConnectError.from(status: http.statusCode) {
                 outcome = .failed(failure.errorDescription ?? "")
             } else if let temp {

@@ -43,6 +43,15 @@ jobs:
             -destination "id=$UDID" -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO | tee build.log | xcbeautify || (grep -E "error:|warning: .*Swift" build.log | head -80; exit 1)
 
+      - name: Start the fake Explorer Native server
+        run: |
+          nohup python3 Tests/Server/fake_server.py --port 47810 > fake_server.log 2>&1 &
+          for i in $(seq 1 40); do
+            curl -sf -H "X-Connect-Code: 12345678" http://127.0.0.1:47810/api/info && break
+            sleep 0.5
+          done
+          echo
+
       - name: Test
         run: |
           set -o pipefail
@@ -65,6 +74,7 @@ jobs:
             TestResults.xcresult
             build.log
             test.log
+            fake_server.log
 
   ipa:
     runs-on: macos-26

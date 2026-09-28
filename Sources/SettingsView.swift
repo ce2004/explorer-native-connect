@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var connecting = false
 
     var body: some View {
+        @Bindable var settings = model.settings
         Form {
             Section {
                 TextField("Computer", text: $host)
@@ -20,13 +21,18 @@ struct SettingsView: View {
                 TextField("Pairing code", text: $code)
                     .keyboardType(.numberPad)
                     .accessibilityIdentifier("code")
-                Button(connecting ? "Connecting" : "Connect") {
+                Button(connecting ? "Connecting" : (firstRun ? "Connect" : "Test connection")) {
                     Task { await connect() }
                 }
                 .disabled(connecting)
                 if let status {
                     Text(status)
                 }
+                if !firstRun && model.configured && model.apiVersion < 2 {
+                    Text("Explorer Native on the laptop is an older version. Renaming, copying and the other file actions appear once it's updated.")
+                }
+            } header: {
+                if !firstRun { Text("Connection").accessibilityAddTraits(.isHeader) }
             } footer: {
                 if firstRun {
                     Text("Use the pairing code shown in Explorer Native on the laptop.")
@@ -34,6 +40,38 @@ struct SettingsView: View {
             }
 
             if !firstRun {
+                Section {
+                    Picker("Sort by", selection: $settings.sort) {
+                        ForEach(SortOrder.allCases) { Text($0.title).tag($0) }
+                    }
+                    Toggle("Folders first", isOn: $settings.foldersFirst)
+                    Toggle("Show file extensions", isOn: $settings.showExtensions)
+                    Toggle("Show folder sizes", isOn: $settings.showFolderSizes)
+                } header: {
+                    Text("Browsing").accessibilityAddTraits(.isHeader)
+                }
+
+                Section {
+                    Toggle("Play the rest of the folder", isOn: $settings.playWholeFolder)
+                    Picker("Skip", selection: $settings.skipInterval) {
+                        ForEach(Settings.skipChoices, id: \.self) { Text("\($0) seconds").tag($0) }
+                    }
+                    Toggle("Keep playing until the next track is ready", isOn: $settings.keepPlayingUntilReady)
+                    Toggle("Continue playing when the app reopens", isOn: $settings.resumePlayback)
+                } header: {
+                    Text("Playback").accessibilityAddTraits(.isHeader)
+                }
+
+                Section {
+                    Picker("When a name is taken", selection: $settings.conflict) {
+                        ForEach(Conflict.allCases) { Text($0.title).tag($0) }
+                    }
+                    Toggle("Confirm before deleting", isOn: $settings.confirmDelete)
+                    Toggle("Announce transfer progress", isOn: $settings.announceTransfers)
+                } header: {
+                    Text("Files").accessibilityAddTraits(.isHeader)
+                }
+
                 Section {
                     Button(model.updater.checking ? "Checking for updates" : "Check for updates") {
                         Task {
@@ -50,6 +88,8 @@ struct SettingsView: View {
                     if let result = model.updater.lastResult {
                         Text(result)
                     }
+                } header: {
+                    Text("Updates").accessibilityAddTraits(.isHeader)
                 } footer: {
                     Text("Version \(model.updater.currentVersion)")
                 }
@@ -64,13 +104,18 @@ struct SettingsView: View {
             }
         }
         .onAppear {
-            host = model.host == ConnectClient.demoHost ? "" : model.host
+            host = model.host
             code = model.code
         }
+        .onChange(of: settings.skipInterval) { model.applySettings() }
+        .onChange(of: settings.keepPlayingUntilReady) { model.applySettings() }
+        .onChange(of: settings.resumePlayback) { model.applySettings() }
+        .onChange(of: settings.announceTransfers) { model.applySettings() }
+        .onChange(of: settings.showFolderSizes) { if !settings.showFolderSizes { model.sizes.clear() } }
     }
 
     private func connect() async {
-        let client = ConnectClient(host: host, code: code)
+        let client = ConnectClient(host: host, code: code, port: model.client.port)
         guard client.code.count == 8 else {
             report("The pairing code is 8 digits.")
             return
@@ -83,7 +128,11 @@ struct SettingsView: View {
             host = client.host
             code = client.code
             model.connected(client, info: info)
-            report(info.name.isEmpty ? "Connected." : "Connected to \(info.name).")
+            var text = info.name.isEmpty ? "Connected." : "Connected to \(info.name)."
+            if info.apiVersion < 2 {
+                text += " Explorer Native on the laptop is an older version, so only browsing and playing work until it's updated."
+            }
+            report(text)
         } catch {
             report(ConnectError.message(for: error))
         }
