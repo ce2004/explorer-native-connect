@@ -74,8 +74,9 @@ struct ActivityBar: View {
     var body: some View {
         let jobs = model.jobs.jobs
         let active = model.transfers.active
-        if !jobs.isEmpty || !active.isEmpty {
-            VStack(spacing: 0) {
+        // The sheet hangs off a view that's always there, so Transfers stays open when the last transfer stops.
+        VStack(spacing: 0) {
+            if !jobs.isEmpty || !active.isEmpty {
                 Divider()
                 Button {
                     showTransfers = true
@@ -94,12 +95,12 @@ struct ActivityBar: View {
                 .accessibilityLabel("Transfers, \(summary(jobs, active))")
                 .accessibilityAction(named: "Stop all transfers") { model.stopAllTransfers() }
                 .padding(.horizontal)
+                .background(.bar)
             }
-            .background(.bar)
-            .sheet(isPresented: $showTransfers) {
-                TransfersView()
-                    .environment(model)
-            }
+        }
+        .sheet(isPresented: $showTransfers) {
+            TransfersView()
+                .environment(model)
         }
     }
 

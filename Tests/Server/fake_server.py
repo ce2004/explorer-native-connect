@@ -70,6 +70,13 @@ def seed(root):
         f.write("Quarterly report\n")
     with open(os.path.join(root, "Docs", "weird +&#% \u65e5\u672c.txt"), "w", encoding="utf-8") as f:
         f.write("odd name\n")
+    # Two minutes of quiet 8 kHz mono, long enough to test chapters without racing the end of the track.
+    frames = 120 * 8000
+    with open(os.path.join(root, "Music", "long.wav"), "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 36 + frames * 2) + b"WAVE")
+        f.write(b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, 8000, 16000, 2, 16))
+        f.write(b"data" + struct.pack("<I", frames * 2))
+        f.write(b"".join(struct.pack("<h", int(300 * math.sin(2 * math.pi * 440 * i / 8000))) for i in range(8000)) * 120)
     # Served slowly (see api_file), so a test can catch a download in progress.
     with open(os.path.join(root, "Docs", "slow.bin"), "wb") as f:
         f.write(os.urandom(3 * 1024 * 1024))
@@ -675,6 +682,12 @@ def rich_stat(path, p, st, want_hash):
                        "blankLines": sum(1 for line in lines if not line.strip()),
                        "longestLine": max((len(line) for line in lines), default=0),
                        "nonAscii": sum(1 for c in text if ord(c) > 127), "tabs": text.count("\t")}
+    elif ext == ".wav":
+        out["media"] = {
+            "container": "WAV", "durationSeconds": 120.0, "bitrate": 128000,
+            "audio": [{"codec": "PCM", "sampleRate": 8000, "bitsPerSample": 16, "channels": 1, "lossless": True}],
+            "chapters": [{"title": "Start", "startSeconds": 0}, {"title": "Middle", "startSeconds": 60}],
+        }
     elif ext == ".flac":
         out["media"] = {
             "container": "FLAC", "durationSeconds": 20.0, "bitrate": 69497, "overallBitrate": 69497,

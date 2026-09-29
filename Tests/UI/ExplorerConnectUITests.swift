@@ -201,12 +201,18 @@ final class ExplorerConnectUITests: XCTestCase {
         XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Channels, Stereo")))
         XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Bit depth, 16-bit")))
         XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Track, 1 of 2")), "tags")
-        let chapter = app.buttons["Chapter 2, Middle, starts at 10 seconds"]
-        XCTAssertTrue(scrollTo(app, chapter), "chapters are buttons")
+        XCTAssertTrue(scrollTo(app, app.buttons["Chapter 2, Middle, starts at 10 seconds"]), "chapters are buttons")
         try audit(app, "details bottom")
+        app.buttons["Done"].tap()
+
+        // A chapter plays from where it starts (a two-minute file, so the test isn't racing the end of the track).
+        longPress(app.buttons["long, 1.8 MB, WAV"])
+        app.buttons["Details"].tap()
+        let chapter = app.buttons["Chapter 2, Middle, starts at 1 minute"]
+        XCTAssertTrue(scrollTo(app, chapter), "chapter row")
         chapter.tap()
         app.buttons["Done"].tap()
-        let bar = button(app, startingWith: "Now playing, tone")
+        let bar = button(app, startingWith: "Now playing, long")
         XCTAssertTrue(bar.waitForExistence(timeout: 20), "the chapter plays")
         bar.tap()
         let position = element(app, "label == %@", "Position")
@@ -215,10 +221,10 @@ final class ExplorerConnectUITests: XCTestCase {
         var v = ""
         while Date() < end {
             v = (position.value as? String) ?? ""
-            if v.hasPrefix("10 ") || v.hasPrefix("11 ") || v.hasPrefix("12 ") || v.hasPrefix("13 ") { break }
+            if v.hasPrefix("1 minute") { break }
             Thread.sleep(forTimeInterval: 0.5)
         }
-        XCTAssertTrue(v.hasPrefix("1") && !v.hasPrefix("1 second"), "started from the chapter: \(v)")
+        XCTAssertTrue(v.hasPrefix("1 minute"), "started from the chapter: \(v)")
         print("OK details")
     }
 
@@ -263,9 +269,9 @@ final class ExplorerConnectUITests: XCTestCase {
         app.buttons["Done"].tap()
 
         // Paused, so the new pick loads straight away rather than waiting behind the playing track.
+        // (The 20-second tone may already have finished on a slow simulator; then it's stopped anyway.)
         let pause = app.buttons["Pause"]
-        XCTAssertTrue(pause.waitForExistence(timeout: 5))
-        pause.tap()
+        if pause.waitForExistence(timeout: 5) { pause.tap() }
 
         // A file that won't decode is announced and skipped to the next one.
         app.buttons["a broken, 5 KB, OGG"].tap()
