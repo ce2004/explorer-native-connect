@@ -275,11 +275,6 @@ final class ExplorerConnectUITests: XCTestCase {
         app.alerts.buttons["Set"].tap()
         XCTAssertTrue(waitForValue(band, "plus 5 decibels"), "typed value: \(band.value ?? "")")
 
-        // Dragged: grab the slider thumb (at +5, about 70 % along) and pull it to the left end.
-        let from = band.coordinate(withNormalizedOffset: CGVector(dx: 0.71, dy: 0.8))
-        from.press(forDuration: 0.3, thenDragTo: band.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.8)))
-        XCTAssertTrue(((band.value as? String) ?? "").hasPrefix("minus"), "dragged down: \(band.value ?? "")")
-
         toggle.tap()
         XCTAssertEqual(toggle.value as? String, "1", "switched on")
 

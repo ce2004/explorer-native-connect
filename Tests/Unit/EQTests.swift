@@ -46,7 +46,8 @@ final class EQTests: XCTestCase {
     private func level(_ x: [Float], _ freq: Double, lastSeconds: Double = 0.4, rate: Double? = nil) -> Double {
         let r = rate ?? fs
         let cycles = max(1, (lastSeconds * freq).rounded(.down))
-        let n = Int((cycles * r / freq).rounded())
+        let n = min(x.count, Int((cycles * r / freq).rounded()))
+        guard n > 0 else { return 0 }
         let slice = x[(x.count - n)...]
         let w = 2 * Double.pi * freq / r
         let coeff = 2 * cos(w)
@@ -232,22 +233,34 @@ final class EQTests: XCTestCase {
         let track = try XCTUnwrap(tracks.first)
         let mix = try XCTUnwrap(EQTap.mix(for: track), "the tap is created")
         let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: [
-            AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
-            AVLinearPCMIsNonInterleaved: false, AVLinearPCMIsBigEndianKey: false, AVSampleRateKey: rate, AVNumberOfChannelsKey: 1,
-        ])
+        // The mixer's own output format (whatever it is, read back from each buffer below).
+        let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: nil)
         output.audioMix = mix
         reader.add(output)
         XCTAssertTrue(reader.startReading())
         var out: [Float] = []
+        var outRate = rate
         while let buffer = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(buffer) {
+            guard let desc = CMSampleBufferGetFormatDescription(buffer),
+                  let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee else { continue }
+            outRate = asbd.mSampleRate
             let length = CMBlockBufferGetDataLength(block)
-            var chunk = [Float](repeating: 0, count: length / 4)
-            _ = chunk.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-            out += chunk
+            var bytes = [UInt8](repeating: 0, count: length)
+            _ = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
+            let channels = Int(max(1, asbd.mChannelsPerFrame))
+            let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
+            bytes.withUnsafeBytes { raw in
+                if isFloat && asbd.mBitsPerChannel == 32 {
+                    let f = raw.bindMemory(to: Float.self)
+                    out += stride(from: 0, to: f.count, by: channels).map { f[$0] }
+                } else if asbd.mBitsPerChannel == 16 {
+                    let i = raw.bindMemory(to: Int16.self)
+                    out += stride(from: 0, to: i.count, by: channels).map { Float(i[$0]) / 32768 }
+                }
+            }
         }
-        XCTAssertGreaterThan(out.count, Int(rate * 0.9))
-        XCTAssertEqual(db(level(out, 1000, rate: rate) / level(samples, 1000, rate: rate)), -12, accuracy: 0.6,
+        XCTAssertGreaterThan(out.count, Int(rate * 0.9), "read through the tap: \(reader.status.rawValue) \(String(describing: reader.error))")
+        XCTAssertEqual(db(level(out, 1000, rate: outRate) / level(samples, 1000, rate: rate)), -12, accuracy: 0.6,
                        "1 kHz at -12 dB through the tap")
         try? FileManager.default.removeItem(at: url)
     }
