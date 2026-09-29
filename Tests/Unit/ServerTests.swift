@@ -410,8 +410,10 @@ final class ServerTests: XCTestCase {
         let player = makePlayer()
         player.formats = try await client.formats()
         player.setEQ(true)
+        let before = EQTap.filteredBuffers
         player.play(tracks: [track("tone.flac"), track("b real.opus")], client: client)
         try await waitFor("FLAC to play through the EQ", timeout: 30) { player.isPlaying && player.position > 1 }
+        try await waitFor("the tap to filter audio inside AVPlayer", timeout: 10) { EQTap.filteredBuffers > before }
         player.seek(to: 15)
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertTrue(player.isPlaying, "seeking with the EQ on")

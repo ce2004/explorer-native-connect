@@ -147,8 +147,10 @@ struct DetailRowView: View {
         LabeledContent {
             Text(row.value)
                 .multilineTextAlignment(.trailing)
+                .fixedSize(horizontal: false, vertical: true)
         } label: {
             Text(row.label)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.accessibilityText)

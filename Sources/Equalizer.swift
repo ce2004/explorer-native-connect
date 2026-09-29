@@ -292,6 +292,10 @@ enum EQTap {
         let engine = EQEngine()
     }
 
+    /// Buffers the taps have filtered (not bypassed), so tests can see the EQ really runs inside AVPlayer.
+    /// Written only on the render thread; a racy read from a test is fine.
+    nonisolated(unsafe) static var filteredBuffers = 0
+
     /// An audio mix that runs `track` through a fresh EQ engine.
     static func mix(for track: AVAssetTrack) -> AVAudioMix? {
         let context = Context()
@@ -319,7 +323,9 @@ enum EQTap {
                 if flagsOut.pointee & MTAudioProcessingTapFlags(kMTAudioProcessingTapFlag_StartOfStream) != 0 {
                     context.engine.resetState()
                 }
-                context.engine.process(UnsafeMutableAudioBufferListPointer(bufferList), frames: Int(framesOut.pointee))
+                let engine = context.engine
+                engine.process(UnsafeMutableAudioBufferListPointer(bufferList), frames: Int(framesOut.pointee))
+                if !engine.isBypassed { EQTap.filteredBuffers &+= 1 }
             })
         var tap: MTAudioProcessingTap?
         let err = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,

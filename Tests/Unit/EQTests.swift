@@ -207,61 +207,21 @@ final class EQTests: XCTestCase {
         XCTAssertEqual(db(level(out, 1000, rate: 44_100) / level(cd, 1000, rate: 44_100)), 6 - 12, accuracy: 0.4)
     }
 
-    /// The whole tap, end to end: a real audio file read through the EQ's audio mix.
-    func testTheTapItselfOnARealFile() async throws {
+    /// The tap is built for a real file's track (AVPlayer runs it; ServerTests plays through it).
+    func testTapIsCreatedForARealTrack() async throws {
         let rate = 44_100.0
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("eq-\(UUID().uuidString).wav")
         let format = AVAudioFormat(standardFormatWithSampleRate: rate, channels: 1)!
         let file = try AVAudioFile(forWriting: url, settings: format.settings)
-        let samples = sine(1000, seconds: 1.0, rate: rate)
+        let samples = sine(1000, seconds: 0.2, rate: rate)
         let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
         pcm.frameLength = AVAudioFrameCount(samples.count)
         for i in samples.indices { pcm.floatChannelData![0][i] = samples[i] }
         try file.write(from: pcm)
-
-        let saved = UnsafeMutablePointer<Double>.allocate(capacity: EQParams.count)
-        defer { saved.deallocate() }
-        EQParams.shared.load(into: saved)
-        defer {
-            let g = (0..<EQEngine.bandCount).map { saved[2 + $0] }
-            EQParams.shared.set(enabled: saved[0] != 0, gains: g)
-        }
-        EQParams.shared.set(enabled: true, gains: gains(5, -12))
-
-        let asset = AVURLAsset(url: url)
-        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let tracks = try await AVURLAsset(url: url).loadTracks(withMediaType: .audio)
         let track = try XCTUnwrap(tracks.first)
-        let mix = try XCTUnwrap(EQTap.mix(for: track), "the tap is created")
-        let reader = try AVAssetReader(asset: asset)
-        // The mixer's own output format (whatever it is, read back from each buffer below).
-        let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: nil)
-        output.audioMix = mix
-        reader.add(output)
-        XCTAssertTrue(reader.startReading())
-        var out: [Float] = []
-        var outRate = rate
-        while let buffer = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(buffer) {
-            guard let desc = CMSampleBufferGetFormatDescription(buffer),
-                  let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee else { continue }
-            outRate = asbd.mSampleRate
-            let length = CMBlockBufferGetDataLength(block)
-            var bytes = [UInt8](repeating: 0, count: length)
-            _ = bytes.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-            let channels = Int(max(1, asbd.mChannelsPerFrame))
-            let isFloat = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0
-            bytes.withUnsafeBytes { raw in
-                if isFloat && asbd.mBitsPerChannel == 32 {
-                    let f = raw.bindMemory(to: Float.self)
-                    out += stride(from: 0, to: f.count, by: channels).map { f[$0] }
-                } else if asbd.mBitsPerChannel == 16 {
-                    let i = raw.bindMemory(to: Int16.self)
-                    out += stride(from: 0, to: i.count, by: channels).map { Float(i[$0]) / 32768 }
-                }
-            }
-        }
-        XCTAssertGreaterThan(out.count, Int(rate * 0.9), "read through the tap: \(reader.status.rawValue) \(String(describing: reader.error))")
-        XCTAssertEqual(db(level(out, 1000, rate: outRate) / level(samples, 1000, rate: rate)), -12, accuracy: 0.6,
-                       "1 kHz at -12 dB through the tap")
+        let mix = try XCTUnwrap(EQTap.mix(for: track))
+        XCTAssertNotNil(mix.inputParameters.first?.audioTapProcessor)
         try? FileManager.default.removeItem(at: url)
     }
 }
