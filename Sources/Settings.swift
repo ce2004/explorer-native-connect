@@ -25,7 +25,14 @@ final class Settings {
     // Clipboard
     var announceClipboard: Bool { didSet { save(announceClipboard, "announceClipboard") } }
 
+    // Playback cache, in bytes; 0 is off.
+    var cacheLimit: Int64 { didSet { save(NSNumber(value: cacheLimit), StreamCache.limitKey) } }
+
     static let skipChoices = [10, 15, 30]
+    nonisolated static let cacheChoices: [Int64] = [0, 500 << 20, 1 << 30, 2 << 30, 5 << 30, 10 << 30]
+
+    /// "Off", "500 MB", "2 GB".
+    nonisolated static func cacheTitle(_ bytes: Int64) -> String { bytes == 0 ? "Off" : Format.size(bytes) }
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -45,10 +52,13 @@ final class Settings {
         confirmDelete = bool("confirmDelete", true)
         announceTransfers = bool("announceTransfers", true)
         announceClipboard = bool("announceClipboard", true)
+        let limit = (defaults.object(forKey: StreamCache.limitKey) as? NSNumber)?.int64Value ?? StreamCache.defaultLimit
+        cacheLimit = Self.cacheChoices.contains(limit) ? limit : StreamCache.defaultLimit
     }
 
     static let allKeys = ["sort", "foldersFirst", "showExtensions", "showFolderSizes", "playWholeFolder", "skipInterval",
-                          "resumePlayback", "keepPlayingUntilReady", "conflict", "confirmDelete", "announceTransfers", "announceClipboard"]
+                          "resumePlayback", "keepPlayingUntilReady", "conflict", "confirmDelete", "announceTransfers", "announceClipboard",
+                          StreamCache.limitKey]
 
     private func save(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)

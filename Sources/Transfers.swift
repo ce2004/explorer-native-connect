@@ -96,6 +96,9 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     private let lock = NSLock()
     private var finishedFiles: [ObjectIdentifier: URL] = [:]
     private var _useBackground = false
+    private var _foreground: URLSession?
+    /// When each task last reported progress, so the main thread hears about it a few times a second, not per packet.
+    private var lastProgress: [Int: TimeInterval] = [:]
 
     /// While the app is in front, chunks go through an ordinary session (quick to start, and reliable in the
     /// simulator); once it goes to the background they go through the background session, which iOS keeps running.
@@ -104,13 +107,30 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         set { lock.lock(); _useBackground = newValue; lock.unlock() }
     }
 
-    lazy var foreground: URLSession = {
+    /// Made again after "Stop all transfers" invalidates it.
+    var foreground: URLSession {
+        lock.lock()
+        defer { lock.unlock() }
+        if let s = _foreground { return s }
         let c = URLSessionConfiguration.default
         c.timeoutIntervalForRequest = 60
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
         c.httpMaximumConnectionsPerHost = 4
-        return URLSession(configuration: c, delegate: self, delegateQueue: nil)
-    }()
+        let s = URLSession(configuration: c, delegate: self, delegateQueue: nil)
+        _foreground = s
+        return s
+    }
+
+    /// "Stop all transfers": the ordinary session is invalidated (every task in it cancelled) and made afresh next
+    /// time; the background session keeps its identifier, so its tasks are all cancelled instead.
+    func stopEverything() {
+        lock.lock()
+        let old = _foreground
+        _foreground = nil
+        lock.unlock()
+        old?.invalidateAndCancel()
+        session.getAllTasks { tasks in tasks.forEach { $0.cancel() } }
+    }
 
     lazy var session: URLSession = {
         let c = URLSessionConfiguration.background(withIdentifier: Self.identifier)
@@ -165,7 +185,13 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         guard let parsed = Self.parse(downloadTask.taskDescription) else { return }
-        onProgress?(parsed.0, parsed.1, totalBytesWritten)
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let last = lastProgress[downloadTask.taskIdentifier] ?? 0
+        let due = now - last >= 0.25 || totalBytesWritten == totalBytesExpectedToWrite
+        if due { lastProgress[downloadTask.taskIdentifier] = now }
+        lock.unlock()
+        if due { onProgress?(parsed.0, parsed.1, totalBytesWritten) }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
@@ -183,6 +209,7 @@ final class DownloadEngine: NSObject, URLSessionDownloadDelegate, @unchecked Sen
         let (id, start) = parsed
         lock.lock()
         let file = finishedFiles.removeValue(forKey: ObjectIdentifier(task))
+        lastProgress[task.taskIdentifier] = nil
         lock.unlock()
         let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         onChunk?(id, start, error == nil ? file : nil, status, error)
@@ -216,6 +243,7 @@ final class TransferCenter {
     @ObservationIgnored private var lastAnnouncement = Date.distantPast
     @ObservationIgnored private var retryDelay: [String: Double] = [:]
     @ObservationIgnored private var committing: Set<String> = []
+    @ObservationIgnored private var lastBackgroundUpdate: [String: Date] = [:]
     @ObservationIgnored private let engine = DownloadEngine.shared
 
     nonisolated static var baseFolder: URL {
@@ -478,6 +506,36 @@ final class TransferCenter {
         save(force: true)
     }
 
+    /// Cancels every upload and download at once, here and on the laptop, without asking. Returns how many stopped.
+    func stopAll() -> Int {
+        let stopping = records.filter { !$0.isFinished }
+        guard !stopping.isEmpty else { return 0 }
+        for task in workers.values { task.cancel() }
+        workers = [:]
+        engine.stopEverything()
+        ConnectClient.cancelTransferTasks()
+        let client = clientProvider?()
+        for r in stopping {
+            if r.direction == .download {
+                try? FileManager.default.removeItem(at: partialURL(r.id))
+            } else {
+                if let uploadID = r.uploadID, let client { Task { try? await client.uploadCancel(uploadID) } }
+                if let jobID = r.jobID, let client { Task { try? await client.cancelJob(jobID) } }
+                removeStaged(r)
+            }
+            update(r.id) {
+                $0.state = .cancelled
+                $0.message = ""
+            }
+            rates[r.id] = nil
+            meters[r.id] = nil
+            retryDelay[r.id] = nil
+        }
+        save(force: true)
+        onChange?()
+        return stopping.count
+    }
+
     func clearFinished() {
         records.removeAll { $0.isFinished }
         save(force: true)
@@ -519,12 +577,15 @@ final class TransferCenter {
     private func progressed(_ id: String, to done: Int64) {
         guard let r = record(id) else { return }
         let old = r.done
+        // Nobody can see the list with the app in the background: keep the bookkeeping to every few seconds.
+        if !AppActivity.isActive && done < r.size && Date().timeIntervalSince(lastBackgroundUpdate[id] ?? .distantPast) < 5 { return }
+        if !AppActivity.isActive { lastBackgroundUpdate[id] = Date() }
         update(id) { $0.done = done }
         var meter = meters[id] ?? RateMeter()
         meter.add(total: done, at: Date().timeIntervalSince1970)
         meters[id] = meter
         rates[id] = meter.rate
-        if announceProgress, let step = TransferMath.crossedStep(from: old, to: done, total: r.size),
+        if announceProgress, AppActivity.isActive, let step = TransferMath.crossedStep(from: old, to: done, total: r.size),
            Date().timeIntervalSince(lastAnnouncement) > 4 {
             lastAnnouncement = Date()
             Announce.say("\(r.name), \(step) percent.")
@@ -552,6 +613,8 @@ final class TransferCenter {
             retryDelay[id] = delay
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(delay))
+                // No retry timer with the screen off; coming back to the front (or the laptop answering) retries.
+                await AppActivity.waitUntilActive()
                 guard let self, self.record(id)?.state == .waiting else { return }
                 self.resume(id)
             }
@@ -616,6 +679,11 @@ final class TransferCenter {
                 do {
                     let uploadID = try await client.uploadStart(folder: r.folder, name: r.name, size: r.size,
                                                                 conflict: Conflict(rawValue: r.conflict) ?? .rename)
+                    if Task.isCancelled || record(id)?.isActive != true {
+                        // Stopped while the laptop was setting it up.
+                        Task { try? await client.uploadCancel(uploadID) }
+                        return
+                    }
                     update(id) { $0.uploadID = uploadID }
                 } catch ConnectError.notFound(_) {
                     // A server without resumable uploads: send it in one go.
@@ -736,6 +804,7 @@ final class TransferCenter {
                 onConnectionProblem?(error)
             }
             try? await Task.sleep(for: .seconds(1))
+            await AppActivity.waitUntilActive()
         }
     }
 
@@ -856,13 +925,21 @@ enum TransferError: LocalizedError {
 /// Reports bytes sent for one upload request.
 final class ChunkProgress: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     let onSent: @Sendable (Int64) -> Void
+    private let lock = NSLock()
+    private var last: TimeInterval = 0
 
     init(onSent: @escaping @Sendable (Int64) -> Void) {
         self.onSent = onSent
     }
 
+    /// A few times a second at most, so the main thread isn't woken for every packet.
     func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
                     totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
-        onSent(totalBytesSent)
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let due = now - last >= 0.25 || totalBytesSent == totalBytesExpectedToSend
+        if due { last = now }
+        lock.unlock()
+        if due { onSent(totalBytesSent) }
     }
 }

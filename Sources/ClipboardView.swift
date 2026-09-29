@@ -71,12 +71,13 @@ struct ClipboardView: View {
         .navigationTitle("Clipboard")
         .refreshable { await clip.refresh() }
         .onAppear {
-            if scenePhase == .active { clip.startWatching() }
+            clip.setAppActive(scenePhase == .active)
+            clip.setVisible(true)
             Task { await clip.loadHistory() }
         }
-        .onDisappear { clip.stopWatching() }
+        .onDisappear { clip.setVisible(false) }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { clip.startWatching() } else { clip.stopWatching() }
+            clip.setAppActive(phase == .active)
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { model.transfers.sendToClipboard(files: urls) }

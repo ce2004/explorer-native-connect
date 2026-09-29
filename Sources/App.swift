@@ -51,11 +51,9 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
-                model.transfers.appCameToFront()
                 model.appBecameActive()
             case .background:
-                model.player.save()
-                model.transfers.appWentToBackground()
+                model.appWentToBackground()
             default: break
             }
         }

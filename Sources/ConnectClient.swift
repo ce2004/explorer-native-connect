@@ -217,8 +217,54 @@ struct ConnectClient: Sendable {
         try await send("size", path: path, timeout: 60)
     }
 
-    func stat(_ path: String) async throws -> FileStat {
-        try await send("stat", path: path, timeout: 20)
+    /// Everything the laptop knows about a file (v2.3), or the short v2 answer from an older server.
+    /// `hash` asks for the SHA-256 too, which takes a while for big files.
+    func stat(_ path: String, hash: Bool = false) async throws -> RichStat {
+        try await send("stat", path: path, query: hash ? [("hash", "1")] : [], timeout: hash ? 600 : 30)
+    }
+
+    /// The laptop's cheap "are you there" (v2.3): its time and how Tailscale reaches the phone.
+    func ping(timeout: TimeInterval = 5) async throws -> PingResult {
+        let client = self
+        return try await Self.withDeadline(timeout + 1, host: host) {
+            try await client.send("ping", timeout: timeout)
+        }
+    }
+
+    /// About five round trips to /api/ping (or /api/info on an older server), timed.
+    func measurePing(count: Int = 5, useInfo: Bool) async throws -> PingMeasurement {
+        var times: [Double] = []
+        var path: String?
+        var lastError: Error?
+        let clock = ContinuousClock()
+        for _ in 0..<count {
+            let start = clock.now
+            do {
+                if useInfo {
+                    _ = try await info()
+                } else {
+                    path = try await ping().path ?? path
+                }
+                let d = clock.now - start
+                times.append(Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+        }
+        if times.isEmpty { throw lastError ?? ConnectError.notAnswering(host) }
+        return PingMeasurement(times: times, path: path)
+    }
+
+    /// Stops uploads that are on the wire (for "Stop all transfers"); ordinary requests carry on.
+    static func cancelTransferTasks() {
+        session.getAllTasks { tasks in
+            for t in tasks {
+                let path = t.originalRequest?.url?.path ?? ""
+                if ["/api/upload/chunk", "/api/upload", "/api/clipboard/send"].contains(path) { t.cancel() }
+            }
+        }
     }
 
     func rename(_ path: String, to newName: String) async throws -> String {

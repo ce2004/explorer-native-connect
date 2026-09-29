@@ -52,6 +52,16 @@ final class ExplorerConnectUITests: XCTestCase {
         field.typeText(text)
     }
 
+    /// Lists are lazy: a row far down only exists once it's scrolled to.
+    @discardableResult
+    private func scrollTo(_ app: XCUIApplication, _ e: XCUIElement, swipes: Int = 10) -> Bool {
+        for _ in 0..<swipes {
+            if e.waitForExistence(timeout: 1) && e.isHittable { return true }
+            app.swipeUp()
+        }
+        return e.exists
+    }
+
     private func longPress(_ e: XCUIElement) {
         XCTAssertTrue(e.waitForExistence(timeout: 15), e.debugDescription)
         e.press(forDuration: 1.2)
@@ -142,7 +152,7 @@ final class ExplorerConnectUITests: XCTestCase {
         longPress(app.buttons["notes, 1.2 KB, TXT"])
         app.buttons["Details"].tap()
         XCTAssertTrue(element(app, "label CONTAINS %@", "notes.txt").waitForExistence(timeout: 15))
-        XCTAssertTrue(element(app, "label CONTAINS %@", "Read-only").exists)
+        XCTAssertTrue(scrollTo(app, element(app, "label BEGINSWITH %@", "Read-only")), "read-only row")
         try audit(app, "details")
         app.buttons["Done"].tap()
 
@@ -163,6 +173,72 @@ final class ExplorerConnectUITests: XCTestCase {
         confirm.tap()
         XCTAssertTrue(waitGone(button(app, startingWith: "Renamed \(stamp)")), "deleted folder is gone")
         print("OK file actions")
+    }
+
+    // MARK: Details, ping
+
+    func testDetailsReadEverythingAndPlayAChapter() throws {
+        let app = launch(serverArgs)
+        openTestDrive(app)
+        app.buttons["Music, folder"].tap()
+        let flac = app.buttons["tone, 170 KB, FLAC"]
+        longPress(flac)
+        app.buttons["Details"].tap()
+        XCTAssertTrue(element(app, "label == %@", "Name, tone.flac").waitForExistence(timeout: 15), "each row is one element")
+        XCTAssertTrue(app.buttons["Copy all details"].exists)
+        try audit(app, "details top")
+        app.buttons["Copy all details"].tap()
+
+        // SHA-256 on request
+        let hash = app.buttons["Compute SHA-256"]
+        XCTAssertTrue(hash.exists)
+        hash.tap()
+        XCTAssertTrue(element(app, "label BEGINSWITH %@", "SHA-256, ").waitForExistence(timeout: 20), "the hash row")
+        XCTAssertFalse(app.buttons["Compute SHA-256"].exists, "not offered twice")
+
+        XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Duration, 20 seconds")), "durations are spoken in words")
+        XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Sample rate, 44.1 kHz")))
+        XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Channels, Stereo")))
+        XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Bit depth, 16-bit")))
+        XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Track, 1 of 2")), "tags")
+        let chapter = app.buttons["Chapter 2, Middle, starts at 10 seconds"]
+        XCTAssertTrue(scrollTo(app, chapter), "chapters are buttons")
+        try audit(app, "details bottom")
+        chapter.tap()
+        app.buttons["Done"].tap()
+        let bar = button(app, startingWith: "Now playing, tone")
+        XCTAssertTrue(bar.waitForExistence(timeout: 20), "the chapter plays")
+        bar.tap()
+        let position = element(app, "label == %@", "Position")
+        XCTAssertTrue(position.waitForExistence(timeout: 10))
+        let end = Date().addingTimeInterval(20)
+        var v = ""
+        while Date() < end {
+            v = (position.value as? String) ?? ""
+            if v.hasPrefix("10 ") || v.hasPrefix("11 ") || v.hasPrefix("12 ") || v.hasPrefix("13 ") { break }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        XCTAssertTrue(v.hasPrefix("1") && !v.hasPrefix("1 second"), "started from the chapter: \(v)")
+        print("OK details")
+    }
+
+    func testTestConnectionSaysThePing() throws {
+        let app = launch(serverArgs)
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 30))
+        settings.tap()
+        let test = app.buttons["Test connection"]
+        XCTAssertTrue(test.waitForExistence(timeout: 10))
+        test.tap()
+        let report = element(app, "label BEGINSWITH %@", "Connected to Fake laptop. Ping ")
+        XCTAssertTrue(report.waitForExistence(timeout: 20))
+        XCTAssertTrue(report.label.contains("(lowest "), report.label)
+        XCTAssertTrue(report.label.hasSuffix("Direct connection."), report.label)
+        try audit(app, "settings")
+        XCTAssertTrue(scrollTo(app, app.buttons["Clear cache"]), "the cache can be cleared")
+        XCTAssertTrue(element(app, "label BEGINSWITH %@", "Cache size").exists)
+        app.buttons["Clear cache"].tap()
+        print("OK ping")
     }
 
     // MARK: Playback
@@ -364,6 +440,28 @@ final class ExplorerConnectUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Save to Files"].exists)
         try audit(app, "transfers")
         print("OK save to iPhone")
+    }
+
+    func testStopAllTransfers() throws {
+        // Small chunks, and slow.bin is served slowly, so the download is still going when we stop it.
+        let app = launch(serverArgs + ["-chunk", "65536"])
+        openTestDrive(app)
+        app.buttons["Docs, folder"].tap()
+        longPress(app.buttons["slow, 3 MB, BIN"])
+        app.buttons["Save to iPhone"].tap()
+        let transfers = app.buttons["Transfers"]
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(transfers.waitForExistence(timeout: 10))
+        transfers.tap()
+        XCTAssertTrue(element(app, "label BEGINSWITH %@", "slow.bin, saving to iPhone").waitForExistence(timeout: 15), "under way")
+        let stop = app.buttons["Stop all transfers"]
+        XCTAssertTrue(stop.exists)
+        XCTAssertTrue(app.buttons["Transfers menu"].exists)
+        try audit(app, "transfers running")
+        stop.tap()
+        XCTAssertTrue(element(app, "label == %@", "slow.bin, cancelled").waitForExistence(timeout: 5), "stopped at once")
+        XCTAssertTrue(waitGone(app.buttons["Stop all transfers"], timeout: 5), "nothing left to stop")
+        print("OK stop all")
     }
 }
 

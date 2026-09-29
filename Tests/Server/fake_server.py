@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""A stand-in for Explorer Native's ConnectServer (API v2, see API.md), used by the simulator tests.
+"""A stand-in for Explorer Native's ConnectServer (see API.md), used by the simulator tests.
 
 Drive T:\\ is a temp folder seeded with test files. Drive G:\\ answers 503, like an unmounted Google Drive.
-Run: python3 fake_server.py [--port 47810] [--code 12345678] [--root DIR]
+--api 4 (the default) has /api/ping and the rich /api/stat; --api 3 answers like the server before them.
+Run: python3 fake_server.py [--port 47810] [--code 12345678] [--root DIR] [--api 4]
 """
-import argparse, datetime, json, math, os, shutil, struct, tempfile, threading, time, uuid
+import argparse, datetime, hashlib, json, math, os, shutil, struct, tempfile, threading, time, uuid
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlsplit, parse_qs
 
@@ -23,7 +24,12 @@ CLIP_DIR = tempfile.mkdtemp(prefix="fakeclip")
 def set_clip(kind, text=None, files=None, image=None):
     with CLIP_COND:
         CLIP.update(seq=CLIP["seq"] + 1, kind=kind, text=text, files=files, image=image)
-        HISTORY.insert(0, {"seq": CLIP["seq"], "kind": kind, "text": text, "files": files, "time": iso(time.time())})
+        top = HISTORY[0] if HISTORY else None
+        # Like the real server since its fix: the same content twice in a row is one history entry.
+        if top and kind != "image" and top["kind"] == kind and top["text"] == text and top["files"] == files:
+            top.update(seq=CLIP["seq"], time=iso(time.time()))
+        else:
+            HISTORY.insert(0, {"seq": CLIP["seq"], "kind": kind, "text": text, "files": files, "time": iso(time.time())})
         del HISTORY[50:]
         CLIP_COND.notify_all()
         return CLIP["seq"]
@@ -64,6 +70,9 @@ def seed(root):
         f.write("Quarterly report\n")
     with open(os.path.join(root, "Docs", "weird +&#% \u65e5\u672c.txt"), "w", encoding="utf-8") as f:
         f.write("odd name\n")
+    # Served slowly (see api_file), so a test can catch a download in progress.
+    with open(os.path.join(root, "Docs", "slow.bin"), "wb") as f:
+        f.write(os.urandom(3 * 1024 * 1024))
 
 
 def iso(ts):
@@ -245,6 +254,12 @@ class Handler(BaseHTTPRequestHandler):
     def api_info(self, q, b):
         self.send_json(200, {"name": "Fake laptop", "app": "Explorer Native", "version": 1, "apiVersion": ARGS.api})
 
+    # Ping (v2.3)
+    def api_ping(self, q, b):
+        if ARGS.api < 4:
+            raise HTTPError(404, "No such endpoint.")
+        self.send_json(200, {"time": iso(time.time()), "path": ARGS.ping_path})
+
     def api_drives(self, q, b):
         usage = shutil.disk_usage(ROOT)
         self.send_json(200, [
@@ -275,6 +290,8 @@ class Handler(BaseHTTPRequestHandler):
         ext = os.path.splitext(p)[1].lower()
         ctype = {".flac": "audio/flac", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg",
                  ".txt": "text/plain; charset=utf-8", ".m4a": "audio/mp4", ".wav": "audio/wav"}.get(ext, "application/octet-stream")
+        if "slow" in os.path.basename(p) and self.command != "HEAD":
+            time.sleep(0.5)
         start, end, status = 0, size - 1, 200
         rng = self.headers.get("Range")
         if rng and rng.startswith("bytes="):
@@ -361,6 +378,8 @@ class Handler(BaseHTTPRequestHandler):
                 n -= len(chunk)
         if ARGS.chunk_delay:
             time.sleep(ARGS.chunk_delay)
+        if "slow" in UPLOADS.get(uid, {}).get("name", ""):
+            time.sleep(0.3)
         self.send_json(200, {"ok": True, "received": os.path.getsize(part)})
 
     def api_upload_status(self, q, b):
@@ -505,6 +524,9 @@ class Handler(BaseHTTPRequestHandler):
         path = q.get("path", "")
         p = local(path)
         st = os.stat(p)
+        if ARGS.api >= 4:
+            self.send_json(200, rich_stat(path, p, st, q.get("hash") == "1"))
+            return
         out = {"path": path, "name": os.path.basename(p) or path, "folder": os.path.isdir(p),
                "size": 0 if os.path.isdir(p) else st.st_size, "modified": iso(st.st_mtime), "created": iso(st.st_ctime),
                "readOnly": False, "onDrive": False}
@@ -609,6 +631,59 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"ok": True, "path": remote(target)})
 
 
+def rich_stat(path, p, st, want_hash):
+    """The v2.3 /api/stat: sections for what applies, nothing for what doesn't."""
+    name = os.path.basename(p) or path
+    is_dir = os.path.isdir(p)
+    ext = os.path.splitext(name)[1].lower()
+    kinds = {".flac": "FLAC audio", ".txt": "Text document", ".bin": "BIN file", ".mp4": "MP4 video", ".ogg": "OGG audio",
+             ".opus": "Opus audio"}
+    parent = path.rsplit("\\", 1)[0] if "\\" in path.rstrip("\\") else None
+    if parent and parent.endswith(":"):
+        parent += "\\"
+    f = {"name": name, "folder": parent, "extension": ext, "kind": "File folder" if is_dir else kinds.get(ext, ext.upper()[1:] + " file"),
+         "created": iso(st.st_ctime), "modified": iso(st.st_mtime), "accessed": iso(st.st_atime),
+         "attributes": ["archive"], "owner": "FAKE\\tester", "onDrive": False}
+    if not is_dir:
+        f["size"] = st.st_size
+        f["sizeOnDisk"] = (st.st_size + 4095) // 4096 * 4096
+        f["mime"] = {".flac": "audio/flac", ".txt": "text/plain"}.get(ext, "application/octet-stream")
+        if want_hash and st.st_size < 2 * 1024 ** 3:
+            h = hashlib.sha256()
+            with open(p, "rb") as fh:
+                for block in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(block)
+            f["sha256"] = h.hexdigest()
+    out = {"path": path, "file": f}
+    if is_dir:
+        names = os.listdir(p)
+        files = sum(1 for n in names if os.path.isfile(os.path.join(p, n)))
+        out["folder"] = {"items": len(names), "files": files, "folders": len(names) - files}
+    elif ext == ".txt":
+        raw = open(p, "rb").read()
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        out["text"] = {"encoding": "UTF-8" if any(c > 127 for c in raw) else "ASCII", "bom": raw.startswith(b"\xef\xbb\xbf"),
+                       "lineEndings": "CRLF" if b"\r\n" in raw else "LF", "lines": len(lines), "words": len(text.split()),
+                       "characters": len(text), "charactersNoSpaces": len("".join(text.split())),
+                       "paragraphs": sum(1 for block in text.split("\n\n") if block.strip()),
+                       "blankLines": sum(1 for line in lines if not line.strip()),
+                       "longestLine": max((len(line) for line in lines), default=0),
+                       "nonAscii": sum(1 for c in text if ord(c) > 127), "tabs": text.count("\t")}
+    elif ext == ".flac":
+        out["media"] = {
+            "container": "FLAC", "durationSeconds": 20.0, "bitrate": 69497, "overallBitrate": 69497,
+            "audio": [{"codec": "FLAC", "sampleRate": 44100, "bitsPerSample": 16, "channels": 2, "channelLayout": "stereo",
+                       "bitrate": 69497, "vbr": True, "lossless": True}],
+            "tags": [{"name": "Title", "value": "Test Tone"}, {"name": "Artist", "value": "Fake Server"},
+                     {"name": "Album", "value": "Fixtures"}, {"name": "Year", "value": "2026"},
+                     {"name": "Track", "value": "1 of 2"}, {"name": "Cover art", "value": "yes, 600\u00d7600 JPEG"}],
+            "chapters": [{"title": "Intro", "startSeconds": 0}, {"title": "Middle", "startSeconds": 10}],
+            "extra": [{"name": "MD5", "value": "0123456789abcdef0123456789abcdef"}],
+        }
+    return out
+
+
 def make_wav(seconds, rate=44100):
     """24-bit stereo PCM sine, the shape /api/audio sends."""
     frames = int(seconds * rate)
@@ -633,7 +708,8 @@ def main():
     ap.add_argument("--port", type=int, default=47810)
     ap.add_argument("--code", default="12345678")
     ap.add_argument("--root")
-    ap.add_argument("--api", type=int, default=3)
+    ap.add_argument("--api", type=int, default=4)
+    ap.add_argument("--ping-path", default="direct", help="what /api/ping says about the route: direct, relay <region>")
     ap.add_argument("--clip-wait", type=float, default=25, help="seconds a clipboard long poll waits")
     ap.add_argument("--delay", type=float, default=0, help="seconds to stall every listing")
     ap.add_argument("--chunk-delay", type=float, default=0, help="seconds to stall after each upload chunk")

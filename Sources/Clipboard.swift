@@ -20,14 +20,39 @@ final class ClipboardModel {
     @ObservationIgnored private var watcher: Task<Void, Never>?
     /// Changes we made ourselves aren't announced back.
     @ObservationIgnored private var ownChanges: Set<Int64> = []
+    /// A server with a history (every server with a clipboard so far) records what the phone sends itself, so the
+    /// phone keeps no echo of its own; this is only for one that doesn't.
+    @ObservationIgnored var serverKeepsHistory = true
+    @ObservationIgnored private var localEchoes: [ClipboardItem] = []
+    @ObservationIgnored private var serverHistory: [ClipboardItem] = []
+    @ObservationIgnored private var tabVisible = false
+    @ObservationIgnored private var appActive = true
 
-    /// Starts following the PC clipboard (the tab is showing and the app is in front).
-    func startWatching() {
+    /// The Clipboard tab came into view or went away.
+    func setVisible(_ visible: Bool) {
+        tabVisible = visible
+        updateWatching()
+    }
+
+    /// The app came to the front, or went to the background (the screen went off).
+    func setAppActive(_ active: Bool) {
+        appActive = active
+        updateWatching()
+    }
+
+    /// The long poll runs only while the tab is showing and the app is in front, so the radio sleeps otherwise.
+    private func updateWatching() {
+        if tabVisible && appActive { startWatching() } else { stopWatching() }
+    }
+
+    var isWatching: Bool { watcher != nil }
+
+    private func startWatching() {
         guard watcher == nil else { return }
         watcher = Task { [weak self] in await self?.watch() }
     }
 
-    func stopWatching() {
+    private func stopWatching() {
         watcher?.cancel()
         watcher = nil
     }
@@ -92,9 +117,15 @@ final class ClipboardModel {
     func loadHistory() async {
         guard let client = clientProvider?() else { return }
         if let items = try? await client.clipboardHistory() {
-            history = items
+            serverHistory = items
+            rebuildHistory()
             historyLoaded = true
         }
+    }
+
+    private func rebuildHistory() {
+        let merged = ClipHistory.merge(server: serverHistory, local: localEchoes, serverKeepsHistory: serverKeepsHistory)
+        if merged != history { history = merged }
     }
 
     // MARK: PC to phone
@@ -144,7 +175,13 @@ final class ClipboardModel {
         do {
             let seq = try await client.setClipboard(text: text)
             ownChanges.insert(seq)
+            if !serverKeepsHistory {
+                localEchoes.insert(ClipboardItem(seq: seq, kind: "text", text: text, time: Date()), at: 0)
+                localEchoes = Array(localEchoes.prefix(50))
+                rebuildHistory()
+            }
             Announce.say("Sent to the PC clipboard.")
+            if historyLoaded && !isWatching { await loadHistory() }
             return true
         } catch {
             onConnectionProblem?(error)
@@ -189,6 +226,8 @@ final class ClipboardModel {
         guard let client = clientProvider?() else { return }
         do {
             try await client.clearClipboardHistory()
+            serverHistory = []
+            localEchoes = []
             history = []
             Announce.say("History cleared.")
         } catch {

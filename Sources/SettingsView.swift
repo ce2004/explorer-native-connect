@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var code = ""
     @State private var status: String?
     @State private var connecting = false
+    @State private var cacheUsed: Int64?
 
     var body: some View {
         @Bindable var settings = model.settings
@@ -63,6 +64,24 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Cache size", selection: $settings.cacheLimit) {
+                        ForEach(Settings.cacheChoices, id: \.self) { Text(Settings.cacheTitle($0)).tag($0) }
+                    }
+                    if let cacheUsed {
+                        Text("Using \(Format.size(cacheUsed))")
+                    }
+                    Button("Clear cache") {
+                        StreamCache.shared.clear()
+                        cacheUsed = 0
+                        Announce.say("Cache cleared.")
+                    }
+                } header: {
+                    Text("Playback cache").accessibilityAddTraits(.isHeader)
+                } footer: {
+                    Text("Playing files are saved ahead on the iPhone in bursts, so the phone's radio can rest and seeking is instant. The oldest files are removed when the cache is full.")
+                }
+
+                Section {
                     Picker("When a name is taken", selection: $settings.conflict) {
                         ForEach(Conflict.allCases) { Text($0.title).tag($0) }
                     }
@@ -113,6 +132,16 @@ struct SettingsView: View {
             host = model.host
             code = model.code
         }
+        .task {
+            cacheUsed = await StreamCache.shared.usedBytes()
+        }
+        .onChange(of: settings.cacheLimit) {
+            model.applySettings()
+            Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                cacheUsed = await StreamCache.shared.usedBytes()
+            }
+        }
         .onChange(of: settings.skipInterval) { model.applySettings() }
         .onChange(of: settings.keepPlayingUntilReady) { model.applySettings() }
         .onChange(of: settings.resumePlayback) { model.applySettings() }
@@ -136,6 +165,12 @@ struct SettingsView: View {
             code = client.code
             model.connected(client, info: info)
             var text = info.name.isEmpty ? "Connected." : "Connected to \(info.name)."
+            if !firstRun {
+                // About five round trips, timed; /api/info stands in on a server without /api/ping.
+                if let ping = try? await client.measurePing(useInfo: info.apiVersion < 4) {
+                    text = ping.report(name: info.name)
+                }
+            }
             if info.apiVersion < 2 {
                 text += " Explorer Native on the laptop is an older version, so only browsing and playing work until it's updated."
             }

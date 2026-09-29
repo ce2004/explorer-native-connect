@@ -1,6 +1,29 @@
 import Foundation
 import Network
 import Observation
+import UIKit
+
+/// Whether the app is in front. Loops that only matter to someone looking (reconnect retries, job progress) wait
+/// here while the app is in the background or the screen is off, instead of waking the radio on a timer.
+@MainActor
+enum AppActivity {
+    private(set) static var isActive = UIApplication.shared.applicationState != .background
+    private static var waiters: [CheckedContinuation<Void, Never>] = []
+
+    static func set(active: Bool) {
+        guard active != isActive else { return }
+        isActive = active
+        guard active else { return }
+        let w = waiters
+        waiters = []
+        w.forEach { $0.resume() }
+    }
+
+    static func waitUntilActive() async {
+        if isActive { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
 
 @MainActor
 @Observable
@@ -70,6 +93,7 @@ final class AppModel {
                 d.removeObject(forKey: k)
             }
             ListingCache.clear()
+            StreamCache.shared.clear()
             let fm = FileManager.default
             try? fm.removeItem(at: TransferCenter.baseFolder)
             for url in (try? fm.contentsOfDirectory(at: TransferCenter.documents, includingPropertiesForKeys: nil)) ?? [] {
@@ -143,6 +167,7 @@ final class AppModel {
         player.persistEnabled = settings.resumePlayback
         transfers.announceProgress = settings.announceTransfers
         clipboard.announceChanges = settings.announceClipboard
+        StreamCache.shared.capacity = settings.cacheLimit
         if !settings.resumePlayback { Player.clearSaved() }
     }
 
@@ -202,10 +227,31 @@ final class AppModel {
 
     /// When the app comes back to the front: check again unless we heard from the laptop just now.
     func appBecameActive() {
+        AppActivity.set(active: true)
+        player.setBackground(false)
+        transfers.appCameToFront()
         guard configured else { return }
         if !isOnline || Date().timeIntervalSince(lastCheck) > 20 {
             Task { await checkNow() }
         }
+    }
+
+    /// The app went to the background or the screen went off: nothing polls from here on unless audio needs it.
+    func appWentToBackground() {
+        AppActivity.set(active: false)
+        player.setBackground(true)
+        player.save()
+        transfers.appWentToBackground()
+    }
+
+    /// Playback that lost the laptop is the one thing worth retrying for with the screen off.
+    private var needsLaptopInBackground: Bool { player.reconnecting && player.wantsPlay }
+
+    /// "Stop all transfers": every upload, download and job on the laptop, at once, without asking.
+    func stopAllTransfers() {
+        let n = transfers.stopAll() + jobs.stopAll()
+        Announce.say(n == 0 ? "Nothing to stop." : "Stopped \(Format.count(n, "transfer", "transfers")).")
+        changeEpoch += 1
     }
 
     /// Any request that succeeded proves the laptop is there.
@@ -248,6 +294,12 @@ final class AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(delay))
                 guard let self, !Task.isCancelled else { return }
+                if !AppActivity.isActive && !self.needsLaptopInBackground {
+                    // Screen off and nothing playing: try again when someone's looking.
+                    await AppActivity.waitUntilActive()
+                    delay = 2
+                    if Task.isCancelled { return }
+                }
                 if self.isOnline { break }
                 if await self.checkNow() { break }
                 delay = min(delay * 2, 60)
@@ -261,6 +313,7 @@ final class AppModel {
             guard path.status == .satisfied else { return }
             Task { @MainActor in
                 guard let self, self.configured, !self.isOnline else { return }
+                guard AppActivity.isActive || self.needsLaptopInBackground else { return }
                 await self.checkNow()
             }
         }

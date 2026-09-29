@@ -1,26 +1,54 @@
 import SwiftUI
 
-/// Everything the laptop knows about one file or folder.
+/// Everything the laptop knows about one file or folder, in sections. Every row is one VoiceOver element
+/// ("Sample rate, 44.1 kHz"); chapters play from where they start.
 struct DetailsView: View {
     let path: String
     let entry: Entry
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var stat: FileStat?
+    @State private var stat: RichStat?
     @State private var error: String?
     @State private var size: FolderSize?
     @State private var sizeError: String?
+    @State private var hashing = false
+
+    private var sections: [DetailSection] {
+        guard let stat else { return [] }
+        var list = DetailsBuilder.sections(stat, path: path)
+        if stat.isFolder, let i = list.firstIndex(where: { $0.title == "File" }) {
+            list[i].rows.append(DetailRow("Size", size?.spoken ?? sizeError ?? "Measuring"))
+        }
+        return list
+    }
 
     var body: some View {
         List {
             if let stat {
-                ForEach(Array(stat.rows.enumerated()), id: \.offset) { item in
-                    LabeledContent(item.element.0, value: item.element.1)
-                        .accessibilityElement(children: .combine)
+                Section {
+                    Button("Copy all details") { copyAll() }
+                    if DetailsBuilder.canHash(stat, apiVersion: model.apiVersion) {
+                        Button(hashing ? "Computing SHA-256" : "Compute SHA-256") { computeHash() }
+                            .disabled(hashing)
+                    }
                 }
-                if stat.folder {
-                    LabeledContent("Size", value: size?.spoken ?? sizeError ?? "Measuring")
-                        .accessibilityElement(children: .combine)
+                ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                    Section {
+                        ForEach(Array(section.rows.enumerated()), id: \.offset) { _, row in
+                            DetailRowView(row: row)
+                        }
+                    } header: {
+                        Text(section.title).accessibilityAddTraits(.isHeader)
+                    }
+                }
+                if !stat.chapters.isEmpty {
+                    Section {
+                        ForEach(Array(stat.chapters.enumerated()), id: \.offset) { i, chapter in
+                            chapterRow(chapter, index: i)
+                        }
+                    } header: {
+                        Text("Chapters").accessibilityAddTraits(.isHeader)
+                    }
                 }
             } else if let error {
                 Text(error)
@@ -35,26 +63,104 @@ struct DetailsView: View {
                 Button("Done") { dismiss() }
             }
         }
-        .task {
-            let client = model.client
-            do {
-                stat = try await client.stat(path)
-            } catch is CancellationError {
-                return
-            } catch {
-                model.noteFailure(error)
-                self.error = ConnectError.message(for: error)
-                Announce.say(self.error ?? "")
-                return
+        .task { await load() }
+    }
+
+    @ViewBuilder
+    private func chapterRow(_ chapter: Chapter, index: Int) -> some View {
+        let label = DetailsBuilder.chapterLabel(chapter, index: index)
+        let title = chapter.title.isEmpty ? "Chapter \(index + 1)" : chapter.title
+        if model.isAudio(entry.name) {
+            Button {
+                play(chapter, title: title)
+            } label: {
+                LabeledContent(title, value: Format.time(chapter.startSeconds))
+                    .contentShape(Rectangle())
             }
-            if stat?.folder == true {
-                do {
-                    size = try await model.sizes.fetch(path, client: client)
-                } catch {
-                    sizeError = ConnectError.sizeMessage(for: error, name: entry.name)
-                }
+            .foregroundStyle(.primary)
+            .accessibilityLabel(label)
+            .accessibilityHint("Plays from here.")
+        } else {
+            LabeledContent(title, value: Format.time(chapter.startSeconds))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label)
+        }
+    }
+
+    private func load() async {
+        let client = model.client
+        do {
+            stat = try await client.stat(path)
+            model.noteSuccess()
+        } catch is CancellationError {
+            return
+        } catch {
+            model.noteFailure(error)
+            self.error = ConnectError.message(for: error)
+            Announce.say(self.error ?? "")
+            return
+        }
+        if stat?.isFolder == true {
+            do {
+                size = try await model.sizes.fetch(path, client: client)
+            } catch {
+                sizeError = ConnectError.sizeMessage(for: error, name: entry.name)
             }
         }
+    }
+
+    private func copyAll() {
+        guard let stat else { return }
+        UIPasteboard.general.string = DetailsBuilder.plainText(title: entry.name, sections: sections, chapters: stat.chapters)
+        Announce.say("Copied all details.")
+    }
+
+    private func computeHash() {
+        hashing = true
+        Announce.say("Computing SHA-256.")
+        let client = model.client
+        Task {
+            defer { hashing = false }
+            do {
+                let hashed = try await client.stat(path, hash: true)
+                stat = hashed
+                Announce.say(hashed.sha256 == nil ? "The laptop couldn't compute the SHA-256." : "SHA-256 computed. It's in the File section.")
+            } catch {
+                model.noteFailure(error)
+                Announce.say(ConnectError.message(for: error))
+            }
+        }
+    }
+
+    private func play(_ chapter: Chapter, title: String) {
+        let track = Player.Track(name: entry.name, path: path, folder: RemotePath.lastComponent(RemotePath.parent(path) ?? path))
+        model.player.play(tracks: [track], client: model.client, at: chapter.startSeconds)
+        Announce.say("Playing from \(title).")
+    }
+}
+
+/// One label and value, read as one element, with Copy in its menu and its actions.
+struct DetailRowView: View {
+    let row: DetailRow
+
+    var body: some View {
+        LabeledContent {
+            Text(row.value)
+                .multilineTextAlignment(.trailing)
+        } label: {
+            Text(row.label)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.accessibilityText)
+        .accessibilityAction(named: "Copy value") { copy() }
+        .contextMenu {
+            Button { copy() } label: { Label("Copy", systemImage: "doc.on.doc") }
+        }
+    }
+
+    private func copy() {
+        UIPasteboard.general.string = row.value
+        Announce.say("Copied.")
     }
 }
 

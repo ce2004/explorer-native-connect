@@ -10,11 +10,21 @@ struct TransfersView: View {
     @State private var sharing: URL?
     @State private var exporting: URL?
 
+    /// Something is moving that "Stop all transfers" would stop.
+    private var anythingRunning: Bool {
+        !model.transfers.active.isEmpty || model.jobs.jobs.contains { !$0.finished }
+    }
+
     var body: some View {
         NavigationStack {
             List {
                 if model.jobs.jobs.isEmpty && model.transfers.records.isEmpty {
                     Text("Nothing is transferring.")
+                }
+                if anythingRunning {
+                    Section {
+                        Button("Stop all transfers", role: .destructive) { model.stopAllTransfers() }
+                    }
                 }
                 if !model.jobs.jobs.isEmpty {
                     Section {
@@ -53,8 +63,17 @@ struct TransfersView: View {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarLeading) {
-                    if model.transfers.records.contains(where: \.isFinished) {
-                        Button("Clear finished") { model.transfers.clearFinished() }
+                    Menu {
+                        Button(role: .destructive) { model.stopAllTransfers() } label: {
+                            Label("Stop all transfers", systemImage: "stop.circle")
+                        }
+                        .disabled(!anythingRunning)
+                        Button { model.transfers.clearFinished() } label: {
+                            Label("Clear finished", systemImage: "checkmark.circle")
+                        }
+                        .disabled(!model.transfers.records.contains(where: \.isFinished))
+                    } label: {
+                        Label("Transfers menu", systemImage: "ellipsis.circle")
                     }
                 }
             }

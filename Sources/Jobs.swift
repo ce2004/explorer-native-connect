@@ -47,6 +47,8 @@ final class JobCenter {
         var delay: Double = 0.7
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(delay))
+            // The job carries on on the laptop; there's no need to ask how it's going with the screen off.
+            await AppActivity.waitUntilActive()
             if Task.isCancelled { return }
             do {
                 let status = try await client.job(id)
@@ -91,6 +93,24 @@ final class JobCenter {
                 Announce.say(ConnectError.message(for: error))
             }
         }
+    }
+
+    /// Cancels every running job on the laptop at once, quietly (Stop all transfers says how many). Returns the count.
+    func stopAll() -> Int {
+        let running = jobs.filter { !$0.finished }
+        for job in running {
+            tasks[job.id]?.cancel()
+            tasks[job.id] = nil
+            if let client = clients[job.id] {
+                Task { try? await client.cancelJob(job.id) }
+            }
+            clients[job.id] = nil
+            update(job.id) {
+                $0.status.state = "cancelled"
+                $0.waiting = false
+            }
+        }
+        return running.count
     }
 
     func dismiss(_ id: String) {

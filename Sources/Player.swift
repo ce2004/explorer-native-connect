@@ -113,6 +113,9 @@ final class Player {
     @ObservationIgnored private var scrubbing = false
     @ObservationIgnored private var seekGeneration = 0
     @ObservationIgnored private var seeking = false
+    @ObservationIgnored private var inBackground = false
+    /// Where the playing file and the next come from, so the cache knows what to keep topped up.
+    @ObservationIgnored private var cachePriority: [URL] = []
 
     static let savedKey = "playback"
     private static let repeatKey = "repeatMode"
@@ -132,8 +135,14 @@ final class Player {
 
     // MARK: - Starting playback
 
-    func play(tracks: [Track], startAt: Int = 0, client: ConnectClient) {
+    /// `at` starts partway in (a chapter). If that track is already the one playing, it just seeks there.
+    func play(tracks: [Track], startAt: Int = 0, client: ConnectClient, at position: Double = 0) {
         self.client = client
+        if position > 0, tracks.count == 1, let cur = current, cur.path == tracks[0].path, active.currentItem != nil, !reconnecting {
+            seek(to: position)
+            if !wantsPlay { play() }
+            return
+        }
         var list = tracks
         var start = startAt
         originalQueue = nil
@@ -142,7 +151,7 @@ final class Player {
             list = QueueBuilder.shuffled(list, current: startAt)
             start = 0
         }
-        begin(list, start, at: 0)
+        begin(list, start, at: position)
     }
 
     /// Puts back what was playing when the app last went away.
@@ -362,19 +371,41 @@ final class Player {
                 Task { @MainActor in self?.currentItemChanged() }
             },
         ]
-        timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
+        addTimeObserver(p)
+    }
+
+    /// Four times a second while someone can see the clock; every 15 seconds (just enough to save the spot) in the
+    /// background, so a 10-hour audiobook doesn't wake the CPU for nothing.
+    private func addTimeObserver(_ p: AVQueuePlayer) {
+        removeTimeObserver()
+        let interval = inBackground ? 15.0 : 0.25
+        timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: interval, preferredTimescale: 600), queue: .main) { [weak self] time in
             let seconds = time.seconds
             MainActor.assumeIsolated { self?.tick(seconds) }
         }
         timeObserverOwner = p
     }
 
-    private func detach() {
-        playerObservations.forEach { $0.invalidate() }
-        playerObservations = []
+    private func removeTimeObserver() {
         if let timeObserver, let owner = timeObserverOwner { owner.removeTimeObserver(timeObserver) }
         timeObserver = nil
         timeObserverOwner = nil
+    }
+
+    /// Called as the app goes to the background and comes back.
+    func setBackground(_ background: Bool) {
+        guard background != inBackground else { return }
+        inBackground = background
+        addTimeObserver(active)
+        if !background, let t = active.currentItem?.currentTime().seconds, t.isFinite, !scrubbing, !seeking, pendingSeek == nil {
+            position = max(0, t)
+        }
+    }
+
+    private func detach() {
+        playerObservations.forEach { $0.invalidate() }
+        playerObservations = []
+        removeTimeObserver()
     }
 
     private func updateActionAtEnd() {
@@ -425,10 +456,35 @@ final class Player {
         seeking = false
     }
 
+    private func streamURL(_ track: Track) -> URL? {
+        guard let client else { return nil }
+        return formats.needsDecoding(track.name) ? client.audioURL(track.path) : client.fileURL(track.path)
+    }
+
+    /// Tells the cache which files to read ahead: the playing one, then the one that's loading or next.
+    private func updateCachePriority() {
+        var tracks: [Track] = []
+        if let cur = current { tracks.append(cur) }
+        if let pend = pending {
+            tracks.append(pend.tracks[pend.index])
+        } else if repeatMode != .one, !sleepAtTrackEnd, let n = QueueBuilder.next(after: index, count: queue.count, repeatMode: repeatMode) {
+            tracks.append(queue[n])
+        }
+        let urls = tracks.compactMap(streamURL)
+        guard urls != cachePriority else { return }
+        cachePriority = urls
+        StreamCache.shared.setPriority(urls)
+    }
+
     private func makeItem(_ track: Track) -> AVPlayerItem? {
         guard let client else { return nil }
         let decode = formats.needsDecoding(track.name)
         guard let url = decode ? client.audioURL(track.path) : client.fileURL(track.path) else { return nil }
+        let cache = StreamCache.shared
+        if cache.enabled {
+            let asset = cache.asset(for: url, headers: client.headers, contentType: StreamCache.contentType(name: track.name, decoded: decode))
+            return AVPlayerItem(asset: asset)
+        }
         var options: [String: Any] = ["AVURLAssetHTTPHeaderFieldsKey": client.headers]
         // The URL has no extension (/api/file?path=...), so say what the file is.
         // /api/audio is always WAV: the laptop decodes anything else (and the sound of videos) to it.
@@ -453,6 +509,7 @@ final class Player {
 
     /// Keeps exactly one track queued behind the current one.
     private func preloadNext() {
+        defer { updateCachePriority() }
         guard repeatMode != .one, !sleepAtTrackEnd else { return }
         let items = active.items()
         guard items.count == 1, let cur = itemIndex[ObjectIdentifier(items[0])],
@@ -641,6 +698,7 @@ final class Player {
         ]
         pending = pend
         loadingTitle = tracks[i].title
+        updateCachePriority()
     }
 
     private func cancelPending() {
@@ -650,6 +708,7 @@ final class Player {
         pend.player.removeAllItems()
         pending = nil
         loadingTitle = nil
+        updateCachePriority()
     }
 
     private func pendingChanged(_ pid: UUID) {

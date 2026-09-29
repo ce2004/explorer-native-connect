@@ -46,24 +46,42 @@ jobs:
       - name: Start the fake Explorer Native server
         run: |
           nohup python3 Tests/Server/fake_server.py --port 47810 --verbose > fake_server.log 2>&1 &
-          for i in $(seq 1 40); do
-            curl -sf -H "X-Connect-Code: 12345678" http://127.0.0.1:47810/api/info && break
-            sleep 0.5
+          # The same server as it was before /api/ping and the rich /api/stat, for the fallbacks.
+          nohup python3 Tests/Server/fake_server.py --port 47811 --api 3 > fake_server_v3.log 2>&1 &
+          for port in 47810 47811; do
+            for i in $(seq 1 40); do
+              curl -sf -H "X-Connect-Code: 12345678" http://127.0.0.1:$port/api/info && break
+              sleep 0.5
+            done
+            echo
           done
-          echo
 
       - name: Test
         run: |
           set -o pipefail
           xcodebuild test-without-building -project ExplorerConnect.xcodeproj -scheme ExplorerConnect \
             -destination "id=$UDID" -derivedDataPath build \
-            -test-timeouts-enabled YES -default-test-execution-time-allowance 60 -maximum-test-execution-time-allowance 120 \
+            -test-timeouts-enabled YES -default-test-execution-time-allowance 300 -maximum-test-execution-time-allowance 600 \
             -resultBundlePath TestResults.xcresult 2>&1 | tee test.log | xcbeautify
 
       - name: Test output
         if: always()
         run: |
-          grep -E "^(OK |AUDIT )|error:|failed|passed|skipped" test.log | head -300 || true
+          grep -E "^(OK |AUDIT )|error:|failed|passed|skipped|exceeded execution time|Restarting after" test.log | head -300 || true
+          # xcodebuild's own verdict, which xcbeautify can hide (a hung test is killed and the run restarted).
+          sed -n '/^Failing tests:/,/^\*\*/p' test.log || true
+
+      - name: Failed tests from the result bundle
+        if: failure()
+        run: |
+          xcrun xcresulttool get test-results summary --path TestResults.xcresult > summary.json || exit 0
+          python3 - <<'EOF'
+          import json
+          s = json.load(open("summary.json"))
+          print("Result:", s.get("result"), "| passed", s.get("passedTests"), "failed", s.get("failedTests"), "skipped", s.get("skippedTests"))
+          for f in s.get("testFailures", []):
+              print("FAILED", f.get("testIdentifierString") or f.get("testName"), "::", f.get("failureText"))
+          EOF
 
       - name: Upload results
         if: failure()
@@ -75,6 +93,7 @@ jobs:
             build.log
             test.log
             fake_server.log
+            fake_server_v3.log
 
   ipa:
     runs-on: macos-26

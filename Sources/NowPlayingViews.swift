@@ -92,6 +92,7 @@ struct ActivityBar: View {
                 }
                 .foregroundStyle(.primary)
                 .accessibilityLabel("Transfers, \(summary(jobs, active))")
+                .accessibilityAction(named: "Stop all transfers") { model.stopAllTransfers() }
                 .padding(.horizontal)
             }
             .background(.bar)
