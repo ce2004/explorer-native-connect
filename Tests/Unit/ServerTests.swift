@@ -373,7 +373,8 @@ final class ServerTests: XCTestCase {
             let (bytes, total) = await cache.cached(flacURL)
             return total == 173_742 && bytes == 173_742
         }
-        let cached = try XCTUnwrap(await cache.cachedData(flacURL))
+        let held = await cache.cachedData(flacURL)
+        let cached = try XCTUnwrap(held)
         let (remote, _) = try await URLSession.shared.data(for: client.request(flacURL))
         XCTAssertEqual(cached, remote, "the cache holds exactly the laptop's bytes")
 

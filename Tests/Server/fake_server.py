@@ -654,7 +654,12 @@ def rich_stat(path, p, st, want_hash):
                 for block in iter(lambda: fh.read(1 << 20), b""):
                     h.update(block)
             f["sha256"] = h.hexdigest()
-    out = {"path": path, "file": f}
+    # Like the real v2.3 server: the v2 fields stay alongside the sections (folder is the section for folders).
+    out = {"path": path, "name": name, "folder": False, "size": 0 if is_dir else st.st_size, "modified": iso(st.st_mtime),
+           "created": iso(st.st_ctime), "readOnly": False, "onDrive": False, "file": f}
+    if ext == ".flac":
+        out["tags"] = {"title": "Test Tone", "artist": "Fake Server", "album": "Fixtures", "year": 2026, "track": 1,
+                       "durationSeconds": 20.0}
     if is_dir:
         names = os.listdir(p)
         files = sum(1 for n in names if os.path.isfile(os.path.join(p, n)))

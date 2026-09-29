@@ -263,12 +263,13 @@ struct RichStat: Decodable {
     }
 
     struct ArchiveInfo: Decodable {
-        var entries, uncompressedSize: Int64?
+        var entries, files, uncompressedSize: Int64?
         var format: String?
-        private enum Keys: String, CodingKey { case entries, uncompressedSize, format }
+        private enum Keys: String, CodingKey { case entries, files, uncompressedSize, format }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: Keys.self)
             entries = c.flexInt(.entries)
+            files = c.flexInt(.files)
             uncompressedSize = c.flexInt(.uncompressedSize)
             format = c.flexString(.format)
         }
@@ -284,8 +285,12 @@ struct RichStat: Decodable {
     var partial = false
     /// The short answer from a server before v2.3.
     var legacy: FileStat?
+    /// The v2 `folder: true` the server still sends beside the sections.
+    var folderFlag = false
+    /// The v2 `tags` object, used when there's no media section to hold them.
+    var oldTags: FileStat.Tags?
 
-    private enum Keys: String, CodingKey { case path, file, folder, text, media, image, archive, partial }
+    private enum Keys: String, CodingKey { case path, file, folder, text, media, image, archive, partial, tags }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -293,16 +298,19 @@ struct RichStat: Decodable {
         partial = c.flexBool(.partial) ?? false
         file = try? c.decodeIfPresent(FileInfo.self, forKey: .file)
         // In the old shape `folder` is true/false; in the new one it's the folder section.
-        folderInfo = (try? c.decodeIfPresent(Bool.self, forKey: .folder)) == nil ? (try? c.decodeIfPresent(FolderInfo.self, forKey: .folder)) : nil
+        let flag = try? c.decodeIfPresent(Bool.self, forKey: .folder)
+        folderFlag = flag == true
+        folderInfo = flag == nil ? (try? c.decodeIfPresent(FolderInfo.self, forKey: .folder)) : nil
         text = try? c.decodeIfPresent(TextInfo.self, forKey: .text)
         media = try? c.decodeIfPresent(MediaInfo.self, forKey: .media)
         image = try? c.decodeIfPresent(ImageInfo.self, forKey: .image)
         archive = try? c.decodeIfPresent(ArchiveInfo.self, forKey: .archive)
         let rich = file != nil || folderInfo != nil || text != nil || media != nil || image != nil || archive != nil
         if !rich { legacy = try FileStat(from: decoder) }
+        if rich && media == nil { oldTags = try? c.decodeIfPresent(FileStat.Tags.self, forKey: .tags) }
     }
 
-    var isFolder: Bool { legacy?.folder ?? (folderInfo != nil) }
+    var isFolder: Bool { legacy?.folder ?? (folderInfo != nil || folderFlag) }
     var size: Int64? { legacy.map(\.size) ?? file?.size }
     var chapters: [Chapter] { media?.chapters ?? [] }
     var sha256: String? { file?.sha256 }
@@ -457,7 +465,8 @@ enum DetailsBuilder {
         }
         if !stat.isFolder, let size = f?.size, size >= 0 { file.append(DetailRow("Size", DetailFormat.size(size))) }
         if let s = f?.sizeOnDisk, s >= 0, !stat.isFolder { file.append(DetailRow("Size on disk", DetailFormat.size(s))) }
-        if let d = f?.created { file.append(DetailRow("Created", Format.date(d))) }
+        // Drive reports created as the same moment as modified; only show it when it says something.
+        if let d = f?.created, abs(d.timeIntervalSince(f?.modified ?? .distantPast)) > 1 { file.append(DetailRow("Created", Format.date(d))) }
         if let d = f?.modified { file.append(DetailRow("Modified", Format.date(d))) }
         if let d = f?.accessed { file.append(DetailRow("Accessed", Format.date(d))) }
         let attributes = f?.attributes ?? []
@@ -485,6 +494,17 @@ enum DetailsBuilder {
             if let n = t.tabs { rows.append(DetailRow("Tabs", DetailFormat.number(n))) }
             if let v = t.language, !v.isEmpty { rows.append(DetailRow("Language", v)) }
             if !rows.isEmpty { out.append(DetailSection(title: "Text", rows: rows)) }
+        }
+
+        if stat.media == nil, let t = stat.oldTags {
+            var rows: [DetailRow] = []
+            if let v = t.title, !v.isEmpty { rows.append(DetailRow("Title", v)) }
+            if let v = t.artist, !v.isEmpty { rows.append(DetailRow("Artist", v)) }
+            if let v = t.album, !v.isEmpty { rows.append(DetailRow("Album", v)) }
+            if let v = t.year, v > 0 { rows.append(DetailRow("Year", String(v))) }
+            if let v = t.track, v > 0 { rows.append(DetailRow("Track", String(v))) }
+            if let v = t.durationSeconds, v > 0 { rows.append(DetailRow("Duration", Format.time(v), spoken: Format.spokenTime(v))) }
+            if !rows.isEmpty { out.append(DetailSection(title: "Tags", rows: rows)) }
         }
 
         if let m = stat.media {
@@ -550,6 +570,7 @@ enum DetailsBuilder {
             var rows: [DetailRow] = []
             if let v = a.format, !v.isEmpty { rows.append(DetailRow("Format", v)) }
             if let v = a.entries { rows.append(DetailRow("Entries", DetailFormat.number(v))) }
+            if let v = a.files { rows.append(DetailRow("Files", DetailFormat.number(v))) }
             if let v = a.uncompressedSize { rows.append(DetailRow("Uncompressed size", DetailFormat.size(v))) }
             if !rows.isEmpty { out.append(DetailSection(title: "Archive", rows: rows)) }
         }

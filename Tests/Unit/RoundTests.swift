@@ -163,6 +163,30 @@ final class DetailsTests: XCTestCase {
         XCTAssertEqual(rows(DetailsBuilder.sections(hashed, path: "C:\\a"), "File")["SHA-256"], "abc")
     }
 
+    func testLiveServerShapeWithOldFieldsAlongside() throws {
+        // What Explorer Native v2.3 really sends: the v2 fields and tags object beside the sections.
+        let json = #"""
+        {"path":"G:\\Audiovault\\prompt.txt","name":"prompt.txt","folder":false,"size":4023,"modified":"2026-09-09T01:49:44.791Z",
+         "created":"2026-09-09T01:49:44.791Z","readOnly":false,"onDrive":true,"tags":{"title":"Old tag"},
+         "file":{"name":"prompt.txt","folder":"G:\\Audiovault","extension":".txt","kind":"Text Document","mime":null,"size":4023,
+                 "created":"2026-09-09T01:49:44.791Z","modified":"2026-09-09T01:49:44.791Z","onDrive":true,
+                 "attributes":["archive","offline","sparse","cloud"],"sizeOnDisk":0},
+         "text":{"encoding":"ASCII","lines":189},"archive":{"entries":3,"files":2}}
+        """#
+        let stat = try JSONDecoder().decode(RichStat.self, from: Data(json.utf8))
+        XCTAssertNil(stat.legacy)
+        XCTAssertFalse(stat.isFolder)
+        let sections = DetailsBuilder.sections(stat, path: "G:\\Audiovault\\prompt.txt")
+        let file = rows(sections, "File")
+        XCTAssertNil(file["Created"], "Drive's created is just modified")
+        XCTAssertNil(file["MIME type"])
+        XCTAssertEqual(file["Attributes"], "Archive, Offline, Sparse, Cloud only")
+        XCTAssertEqual(rows(sections, "Tags")["Title"], "Old tag", "the v2 tags when there's no media section")
+        XCTAssertEqual(rows(sections, "Archive")["Files"], "2")
+        let folder = try JSONDecoder().decode(RichStat.self, from: Data(#"{"path":"C:\\Users","folder":true,"file":{"name":"Users"}}"#.utf8))
+        XCTAssertTrue(folder.isFolder)
+    }
+
     func testFolderSectionAndOldServerFallback() throws {
         let folder = try JSONDecoder().decode(RichStat.self, from: Data(#"{"path":"T:\\Docs","file":{"name":"Docs"},"folder":{"items":5,"files":3,"folders":2}}"#.utf8))
         XCTAssertTrue(folder.isFolder)
