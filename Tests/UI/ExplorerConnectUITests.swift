@@ -193,8 +193,8 @@ final class ExplorerConnectUITests: XCTestCase {
         let hash = app.buttons["Compute SHA-256"]
         XCTAssertTrue(hash.exists)
         hash.tap()
-        XCTAssertTrue(element(app, "label BEGINSWITH %@", "SHA-256, ").waitForExistence(timeout: 20), "the hash row")
-        XCTAssertFalse(app.buttons["Compute SHA-256"].exists, "not offered twice")
+        XCTAssertTrue(waitGone(app.buttons["Compute SHA-256"], timeout: 20), "not offered again once it's there")
+        XCTAssertTrue(scrollTo(app, element(app, "label BEGINSWITH %@", "SHA-256, ")), "the hash row")
 
         XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Duration, 20 seconds")), "durations are spoken in words")
         XCTAssertTrue(scrollTo(app, element(app, "label == %@", "Sample rate, 44.1 kHz")))
@@ -449,10 +449,10 @@ final class ExplorerConnectUITests: XCTestCase {
         app.buttons["Docs, folder"].tap()
         longPress(app.buttons["slow, 3 MB, BIN"])
         app.buttons["Save to iPhone"].tap()
-        let transfers = app.buttons["Transfers"]
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(transfers.waitForExistence(timeout: 10))
-        transfers.tap()
+        // The activity bar under every screen opens Transfers, and has Stop all as a VoiceOver action.
+        let bar = button(app, startingWith: "Transfers, ")
+        XCTAssertTrue(bar.waitForExistence(timeout: 10), "activity bar")
+        bar.tap()
         XCTAssertTrue(element(app, "label BEGINSWITH %@", "slow.bin, saving to iPhone").waitForExistence(timeout: 15), "under way")
         let stop = app.buttons["Stop all transfers"]
         XCTAssertTrue(stop.exists)
