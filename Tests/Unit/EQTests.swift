@@ -228,7 +228,8 @@ final class EQTests: XCTestCase {
         EQParams.shared.set(enabled: true, gains: gains(5, -12))
 
         let asset = AVURLAsset(url: url)
-        let track = try XCTUnwrap(try await asset.loadTracks(withMediaType: .audio).first)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        let track = try XCTUnwrap(tracks.first)
         let mix = try XCTUnwrap(EQTap.mix(for: track), "the tap is created")
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: [
