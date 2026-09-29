@@ -334,7 +334,9 @@ final class ExplorerConnectUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Save all to iPhone"].exists)
 
         // History
+        // The button is at the end of a lazy list, so it only exists once scrolled to.
         let clear = app.buttons["Clear history"]
+        for _ in 0..<8 where !clear.waitForExistence(timeout: 1) { app.swipeUp() }
         XCTAssertTrue(clear.waitForExistence(timeout: 10))
         clear.tap()
         var confirm = app.sheets.buttons["Clear history"]

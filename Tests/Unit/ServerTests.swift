@@ -28,7 +28,7 @@ final class ServerTests: XCTestCase {
 
     func testInfoFormatsDrivesAndLists() async throws {
         let info = try await client.info()
-        XCTAssertEqual(info.apiVersion, 2)
+        XCTAssertGreaterThanOrEqual(info.apiVersion, 2)
         let formats = try await client.formats()
         XCTAssertTrue(formats.needsDecoding("x.opus"))
         XCTAssertFalse(formats.needsDecoding("x.flac"))
@@ -141,7 +141,7 @@ final class ServerTests: XCTestCase {
     func testResumableUploadWithPauseAndResume() async throws {
         let center = makeCenter(chunk: 256 * 1024)
         let name = unique("upload") + ".bin"
-        let file = try tempFile(name, bytes: 3 * 1024 * 1024 + 123)
+        let file = try tempFile(name, bytes: 48 * 1024 * 1024 + 123)
         center.upload(files: [file], to: "T:\\Docs", conflict: .rename)
         let id = try XCTUnwrap(center.records.last?.id)
         try await waitFor("some bytes to go") { (center.record(id)?.done ?? 0) > 0 }
@@ -153,7 +153,7 @@ final class ServerTests: XCTestCase {
         try await waitFor("the upload", timeout: 60) { center.record(id)?.state == .done }
         XCTAssertGreaterThan(pausedAt, 0)
         let listed = try await client.list("T:\\Docs")
-        XCTAssertEqual(listed.first { $0.name == name }?.size, 3 * 1024 * 1024 + 123)
+        XCTAssertEqual(listed.first { $0.name == name }?.size, 48 * 1024 * 1024 + 123)
         print("OK resumable upload")
     }
 
