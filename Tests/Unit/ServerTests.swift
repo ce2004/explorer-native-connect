@@ -398,6 +398,34 @@ final class ServerTests: XCTestCase {
         print("OK cache")
     }
 
+    func testPlaysWithTheEqualizerOn() async throws {
+        let saved = UnsafeMutablePointer<Double>.allocate(capacity: EQParams.count)
+        defer { saved.deallocate() }
+        EQParams.shared.load(into: saved)
+        defer { EQParams.shared.set(enabled: saved[0] != 0, gains: (0..<EQEngine.bandCount).map { saved[2 + $0] }) }
+        var g = Array(repeating: 0.0, count: EQEngine.bandCount)
+        g[2] = 6
+        g[7] = -4
+        EQParams.shared.set(enabled: true, gains: g)
+        let player = makePlayer()
+        player.formats = try await client.formats()
+        player.setEQ(true)
+        player.play(tracks: [track("tone.flac"), track("b real.opus")], client: client)
+        try await waitFor("FLAC to play through the EQ", timeout: 30) { player.isPlaying && player.position > 1 }
+        player.seek(to: 15)
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertTrue(player.isPlaying, "seeking with the EQ on")
+        XCTAssertGreaterThanOrEqual(player.position, 15)
+        player.setEQ(false)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(player.isPlaying, "switching the EQ off mid-track")
+        player.setEQ(true)
+        player.next()
+        try await waitFor("decoded audio through the EQ", timeout: 30) { player.current?.name == "b real.opus" && player.isPlaying && player.position > 0.5 }
+        player.pause()
+        print("OK playback with EQ")
+    }
+
     func testFlacPlaysAndSeeksInstantly() async throws {
         let player = makePlayer()
         player.play(tracks: [track("tone.flac")], client: client)
