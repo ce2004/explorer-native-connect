@@ -266,13 +266,20 @@ final class ExplorerConnectUITests: XCTestCase {
         app.swipeDown()
         try audit(app, "equalizer")
 
-        band.increment()
-        XCTAssertEqual(band.value as? String, "plus 1 decibel", "swipe up adds 1 dB")
-        band.increment()
-        band.increment()
-        XCTAssertEqual(band.value as? String, "plus 3 decibels")
-        band.decrement()
-        XCTAssertEqual(band.value as? String, "plus 2 decibels", "swipe down takes 1 dB off")
+        // Typed: from the band's menu (a VoiceOver action too).
+        longPress(band)
+        app.buttons["Type a value"].tap()
+        let field = app.alerts.textFields.firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        clearAndType(field, "5")
+        app.alerts.buttons["Set"].tap()
+        XCTAssertTrue(waitForValue(band, "plus 5 decibels"), "typed value: \(band.value ?? "")")
+
+        // Dragged: grab the slider thumb (at +5, about 70 % along) and pull it to the left end.
+        let from = band.coordinate(withNormalizedOffset: CGVector(dx: 0.71, dy: 0.8))
+        from.press(forDuration: 0.3, thenDragTo: band.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.8)))
+        XCTAssertTrue(((band.value as? String) ?? "").hasPrefix("minus"), "dragged down: \(band.value ?? "")")
+
         toggle.tap()
         XCTAssertEqual(toggle.value as? String, "1", "switched on")
 
@@ -327,6 +334,15 @@ final class ExplorerConnectUITests: XCTestCase {
         XCTAssertTrue(position2.waitForExistence(timeout: 10))
         XCTAssertTrue(waitForValue(position2, notEqualTo: "0 seconds", timeout: 20), "decoded audio plays")
         print("OK playback")
+    }
+
+    private func waitForValue(_ e: XCUIElement, _ value: String, timeout: TimeInterval = 5) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if (e.value as? String) == value { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return false
     }
 
     private func waitForValue(_ e: XCUIElement, notEqualTo value: String, timeout: TimeInterval) -> Bool {
