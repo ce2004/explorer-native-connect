@@ -266,6 +266,12 @@ final class ExplorerConnectUITests: XCTestCase {
         app.swipeDown()
         try audit(app, "equalizer")
 
+        // Switch it on: the switch control itself (tapping the row's label does nothing on iOS).
+        let knob = toggle.switches.firstMatch.exists ? toggle.switches.firstMatch : toggle
+        knob.tap()
+        if !waitForValue(toggle, "1", timeout: 3) { knob.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.5)).tap() }
+        XCTAssertTrue(waitForValue(toggle, "1"), "switched on")
+
         // Typed: from the band's menu (a VoiceOver action too).
         longPress(band)
         app.buttons["Type a value"].tap()
@@ -275,10 +281,6 @@ final class ExplorerConnectUITests: XCTestCase {
         app.alerts.buttons["Set"].tap()
         XCTAssertTrue(waitForValue(band, "plus 5 decibels"), "typed value: \(band.value ?? "")")
 
-        // Tap the switch itself, not the middle of its row.
-        let knob = toggle.switches.firstMatch.exists ? toggle.switches.firstMatch : toggle
-        knob.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertTrue(waitForValue(toggle, "1"), "switched on")
 
         let reset = app.buttons["Reset all"]
         XCTAssertTrue(scrollTo(app, reset))

@@ -74,15 +74,20 @@ struct DetailsView: View {
             Button {
                 play(chapter, title: title)
             } label: {
-                LabeledContent(title, value: Format.time(chapter.startSeconds))
-                    .contentShape(Rectangle())
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(Format.time(chapter.startSeconds))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
             }
             .foregroundStyle(.primary)
             .accessibilityLabel(label)
             .accessibilityHint("Plays from here.")
         } else {
-            LabeledContent(title, value: Format.time(chapter.startSeconds))
-                .accessibilityElement(children: .ignore)
+            DetailRowView(row: DetailRow(title, Format.time(chapter.startSeconds)))
                 .accessibilityLabel(label)
         }
     }
