@@ -46,6 +46,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.conner.explorerconnect
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/EQAtomic.h
         PRODUCT_NAME: ExplorerConnect
         TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon

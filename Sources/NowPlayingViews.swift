@@ -185,6 +185,11 @@ struct NowPlayingView: View {
                         ForEach(RepeatMode.allCases) { Text($0.title).tag($0) }
                     }
                     Toggle("Shuffle", isOn: Binding(get: { player.shuffled }, set: { player.setShuffle($0) }))
+                    NavigationLink {
+                        EQView()
+                    } label: {
+                        LabeledContent("EQ", value: model.equalizer.enabled ? "On" : "Off")
+                    }
                     Menu {
                         Button("Off") { player.setSleepTimer(minutes: nil) }
                         ForEach([15, 30, 45, 60], id: \.self) { m in

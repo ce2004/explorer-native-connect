@@ -64,6 +64,7 @@ final class AppModel {
     let sizes = FolderSizes()
     let transfers = TransferCenter()
     let clipboard = ClipboardModel()
+    let equalizer = Equalizer()
 
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let portOverride: Int?
@@ -89,7 +90,8 @@ final class AppModel {
         let args = ProcessInfo.processInfo.arguments
         let d = UserDefaults.standard
         if args.contains("-uitest-reset") {
-            for k in [Keys.host, Keys.code, Keys.configured, Keys.name, Keys.api, Keys.formats, Player.savedKey, "repeatMode", "playbackSpeed"] + Settings.allKeys {
+            for k in [Keys.host, Keys.code, Keys.configured, Keys.name, Keys.api, Keys.formats, Player.savedKey, "repeatMode", "playbackSpeed",
+                      Equalizer.enabledKey, Equalizer.gainsKey] + Settings.allKeys {
                 d.removeObject(forKey: k)
             }
             ListingCache.clear()
@@ -126,6 +128,8 @@ final class AppModel {
 
         applySettings()
         player.formats = formats
+        player.setEQ(equalizer.enabled)
+        equalizer.onEnabledChange = { [weak self] on in self?.player.setEQ(on) }
         transfers.clientProvider = { [weak self] in self?.client ?? ConnectClient(host: "", code: "") }
         transfers.onChange = { [weak self] in self?.changeEpoch += 1 }
         transfers.onConnectionProblem = { [weak self] error in self?.noteFailure(error) }

@@ -247,6 +247,50 @@ final class ExplorerConnectUITests: XCTestCase {
         print("OK ping")
     }
 
+    // MARK: Equalizer
+
+    func testEqualizerScreen() throws {
+        let app = launch(serverArgs)
+        let settings = app.buttons["Settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 30))
+        settings.tap()
+        let link = button(app, startingWith: "Equalizer")
+        XCTAssertTrue(scrollTo(app, link), "Equalizer in Settings")
+        link.tap()
+        let toggle = app.switches["Equalizer"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        let band = element(app, "label == %@", "125 hertz")
+        XCTAssertTrue(band.waitForExistence(timeout: 5), "each band is one element")
+        XCTAssertEqual(band.value as? String, "0 decibels")
+        XCTAssertTrue(element(app, "label == %@", "16 kilohertz").exists || scrollTo(app, element(app, "label == %@", "16 kilohertz")))
+        app.swipeDown()
+        try audit(app, "equalizer")
+
+        band.increment()
+        XCTAssertEqual(band.value as? String, "plus 1 decibel", "swipe up adds 1 dB")
+        band.increment()
+        band.increment()
+        XCTAssertEqual(band.value as? String, "plus 3 decibels")
+        band.decrement()
+        XCTAssertEqual(band.value as? String, "plus 2 decibels", "swipe down takes 1 dB off")
+        toggle.tap()
+        XCTAssertEqual(toggle.value as? String, "1", "switched on")
+
+        let reset = app.buttons["Reset all"]
+        XCTAssertTrue(scrollTo(app, reset))
+        reset.tap()
+        app.swipeDown()
+        app.swipeDown()
+        XCTAssertTrue(band.waitForExistence(timeout: 5))
+        XCTAssertEqual(band.value as? String, "0 decibels", "Reset all")
+
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let back = button(app, startingWith: "Equalizer")
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        XCTAssertTrue(back.label.contains("On") || (back.value as? String) == "On", "Settings says it's on: \(back.label)")
+        print("OK equalizer")
+    }
+
     // MARK: Playback
 
     func testPlaysFlacDecodedAudioAndSkipsBrokenFiles() throws {
@@ -266,6 +310,7 @@ final class ExplorerConnectUITests: XCTestCase {
         XCTAssertTrue(position.waitForExistence(timeout: 10))
         XCTAssertTrue(waitForValue(position, notEqualTo: "0 seconds", timeout: 20), "FLAC position moves")
         try audit(app, "now playing")
+        XCTAssertTrue(scrollTo(app, button(app, startingWith: "EQ")), "the EQ is reachable from Now Playing")
         app.buttons["Done"].tap()
 
         // Paused, so the new pick loads straight away rather than waiting behind the playing track.

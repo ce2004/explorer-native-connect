@@ -21,3 +21,7 @@ Playback goes through an `AVAssetResourceLoaderDelegate` backed by a disk cache 
 - The cap is 2 GB by default. Settings > Playback cache has Off, 500 MB, 1 GB, 2 GB, 5 GB and 10 GB, plus Clear cache. Off streams straight from the laptop as before.
 - Keep playing until ready and `/api/audio` WAVs work unchanged: the loading track reads through the same cache. If the laptop fails, the requests waiting on the network fail, and the player's own reconnect takes over. A fully cached track keeps playing with the laptop gone.
 - All cache work (disk reads and writes, answering AVPlayer, the URLSession callbacks) runs on one serial queue, never the main thread.
+
+## Equalizer
+
+The EQ runs in an MTAudioProcessingTap on each player item, and only while it's switched on. When it's off, items carry no audio mix at all. When it's on but every band is at 0, or a band has glided back to 0 and its filter has rung down, the tap hands the audio through without touching it or doing any maths.

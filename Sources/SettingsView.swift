@@ -64,6 +64,16 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    NavigationLink {
+                        EQView()
+                    } label: {
+                        LabeledContent("Equalizer", value: model.equalizer.enabled ? "On" : "Off")
+                    }
+                } header: {
+                    Text("Sound").accessibilityAddTraits(.isHeader)
+                }
+
+                Section {
                     Picker("Cache size", selection: $settings.cacheLimit) {
                         ForEach(Settings.cacheChoices, id: \.self) { Text(Settings.cacheTitle($0)).tag($0) }
                     }

@@ -69,6 +69,8 @@ final class Player {
     /// Asks the laptop whether it's reachable (short timeout).
     @ObservationIgnored var probe: (@MainActor () async -> Bool)?
     @ObservationIgnored var onConnectionLost: (@MainActor () -> Void)?
+    /// The equalizer's tap goes on every item while this is on; with it off, items have no audio mix at all.
+    @ObservationIgnored private(set) var eqEnabled = false
 
     private final class Pending {
         let id = UUID()
@@ -483,7 +485,7 @@ final class Player {
         let cache = StreamCache.shared
         if cache.enabled {
             let asset = cache.asset(for: url, headers: client.headers, contentType: StreamCache.contentType(name: track.name, decoded: decode))
-            return AVPlayerItem(asset: asset)
+            return withEQ(AVPlayerItem(asset: asset))
         }
         var options: [String: Any] = ["AVURLAssetHTTPHeaderFieldsKey": client.headers]
         // The URL has no extension (/api/file?path=...), so say what the file is.
@@ -493,9 +495,33 @@ final class Player {
         } else if let mime = UTType(filenameExtension: FileKind.ext(track.name))?.preferredMIMEType {
             options[AVURLAssetOverrideMIMETypeKey] = mime
         }
-        let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
-        item.audioMix = nil
+        return withEQ(AVPlayerItem(asset: AVURLAsset(url: url, options: options)))
+    }
+
+    private func withEQ(_ item: AVPlayerItem) -> AVPlayerItem {
+        if eqEnabled { EQTap.attach(to: item) { [weak self] in self?.eqEnabled == true } }
         return item
+    }
+
+    /// Every item the player holds: the playing one, the next, and one loading to take over.
+    private var allItems: [AVPlayerItem] {
+        active.items() + (pending.map { [$0.item] } ?? [])
+    }
+
+    /// Switches the equalizer's tap on or off for everything loaded, live.
+    func setEQ(_ on: Bool) {
+        guard on != eqEnabled else { return }
+        eqEnabled = on
+        if on {
+            for item in allItems { EQTap.attach(to: item) { [weak self] in self?.eqEnabled == true } }
+        } else {
+            // The engines glide to flat over 20 ms (the settings already say off); then the mix comes off entirely.
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard let self, !self.eqEnabled else { return }
+                for item in self.allItems { item.audioMix = nil }
+            }
+        }
     }
 
     private func watchActive(_ item: AVPlayerItem, index i: Int) {
