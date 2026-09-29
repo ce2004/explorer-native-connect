@@ -119,7 +119,7 @@ struct TransfersView: View {
                     Button("Remove") { model.transfers.remove(r.id) }
                 }
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(TapTargetButtonStyle())
             .font(.subheadline)
         }
         .padding(.vertical, 4)
@@ -245,5 +245,17 @@ private final class StagedBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return list
+    }
+}
+
+/// A borderless button with at least a 44 point square hit area, the size
+/// Apple's accessibility audit asks for. `.borderless` sizes to its text.
+struct TapTargetButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(configuration.role == .destructive ? Color.red : Color.accentColor)
+            .opacity(configuration.isPressed ? 0.5 : 1)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
     }
 }
