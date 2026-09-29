@@ -582,13 +582,14 @@ enum Labels {
         case "network": return "Network"
         case "removable": return "USB drive"
         case "cdrom": return "CD drive"
+        case "googledrive": return "Google Drive"
         default: return "Local disk"
         }
     }
 
     private static func kindText(_ kind: String) -> String? {
         switch kind.lowercased() {
-        case "fixed", "": return nil
+        case "fixed", "", "googledrive": return nil
         case "network": return "network drive"
         case "removable": return "removable"
         case "cdrom": return "CD"
@@ -601,6 +602,7 @@ enum Labels {
         case "network": return "server.rack"
         case "removable": return "externaldrive"
         case "cdrom": return "opticaldiscdrive"
+        case "googledrive": return "icloud"
         default: return "internaldrive"
         }
     }

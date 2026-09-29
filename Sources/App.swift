@@ -25,7 +25,16 @@ struct RootView: View {
     var body: some View {
         Group {
             if model.configured {
-                BrowserView()
+                if model.apiVersion >= 3 {
+                    TabView {
+                        BrowserView()
+                            .tabItem { Label("Files", systemImage: "folder") }
+                        ClipboardTab()
+                            .tabItem { Label("Clipboard", systemImage: "doc.on.clipboard") }
+                    }
+                } else {
+                    BrowserView()
+                }
             } else {
                 NavigationStack {
                     SettingsView(firstRun: true)
@@ -61,26 +70,12 @@ struct FolderRoute: Hashable {
 }
 
 struct BrowserView: View {
-    @Environment(AppModel.self) private var model
-    @State private var showNowPlaying = false
-
     var body: some View {
         NavigationStack {
             DrivesView()
                 .navigationDestination(for: FolderRoute.self) { FolderView(route: $0) }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                ActivityBar()
-                if model.player.current != nil {
-                    NowPlayingBar { showNowPlaying = true }
-                }
-            }
-        }
-        .sheet(isPresented: $showNowPlaying) {
-            NowPlayingView()
-                .environment(model)
-        }
+        .modifier(PlayerBars())
     }
 }
 

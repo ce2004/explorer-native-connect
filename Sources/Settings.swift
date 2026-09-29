@@ -22,6 +22,9 @@ final class Settings {
     var confirmDelete: Bool { didSet { save(confirmDelete, "confirmDelete") } }
     var announceTransfers: Bool { didSet { save(announceTransfers, "announceTransfers") } }
 
+    // Clipboard
+    var announceClipboard: Bool { didSet { save(announceClipboard, "announceClipboard") } }
+
     static let skipChoices = [10, 15, 30]
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -41,10 +44,11 @@ final class Settings {
         conflict = Conflict(rawValue: defaults.string(forKey: "conflict") ?? "") ?? .rename
         confirmDelete = bool("confirmDelete", true)
         announceTransfers = bool("announceTransfers", true)
+        announceClipboard = bool("announceClipboard", true)
     }
 
     static let allKeys = ["sort", "foldersFirst", "showExtensions", "showFolderSizes", "playWholeFolder", "skipInterval",
-                          "resumePlayback", "keepPlayingUntilReady", "conflict", "confirmDelete", "announceTransfers"]
+                          "resumePlayback", "keepPlayingUntilReady", "conflict", "confirmDelete", "announceTransfers", "announceClipboard"]
 
     private func save(_ value: Any, _ key: String) {
         defaults.set(value, forKey: key)

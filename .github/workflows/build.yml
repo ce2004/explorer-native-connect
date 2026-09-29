@@ -139,7 +139,7 @@ jobs:
               }],
               "appPermissions": {
                 "entitlements": [],
-                "privacy": {"NSLocalNetworkUsageDescription": "Explorer Connect connects to your computer to browse and play its files."}
+                "privacy": {"NSLocalNetworkUsageDescription": "Explorer Connect connects to your computer to browse and play its files.", "NSPhotoLibraryAddUsageDescription": "Explorer Connect saves images from the PC clipboard to Photos."}
               }
             }],
             "news": []

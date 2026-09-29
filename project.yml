@@ -30,6 +30,7 @@ targets:
         UIBackgroundModes: [audio]
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        NSPhotoLibraryAddUsageDescription: Explorer Connect saves images from the PC clipboard to Photos.
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

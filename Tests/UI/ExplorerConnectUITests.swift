@@ -265,6 +265,87 @@ final class ExplorerConnectUITests: XCTestCase {
         print("OK offline")
     }
 
+    // MARK: Clipboard
+
+    /// Talks to the fake server directly, playing the part of someone at the laptop.
+    @discardableResult
+    private func server(_ method: String, _ path: String, _ body: [String: Any]? = nil) -> [String: Any] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:47810" + path)!)
+        request.httpMethod = method
+        request.setValue("12345678", forHTTPHeaderField: "X-Connect-Code")
+        if let body {
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        let done = DispatchSemaphore(value: 0)
+        let box = ResultBox()
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            box.data = data
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 10)
+        return (box.data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
+    }
+
+    func testClipboardBothWays() throws {
+        let app = launch(serverArgs)
+        // Copy on PC from a file row
+        openTestDrive(app)
+        longPress(app.buttons["notes, 1.2 KB, TXT"])
+        app.buttons["Copy on PC"].tap()
+        var copied = false
+        for _ in 0..<20 where !copied {
+            copied = ((server("GET", "/api/clipboard")["files"] as? [String]) ?? []).contains("T:\\notes.txt")
+            if !copied { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        XCTAssertTrue(copied, "Copy on PC put the file on the laptop's clipboard")
+
+        let tab = app.tabBars.buttons["Clipboard"]
+        XCTAssertTrue(tab.waitForExistence(timeout: 10))
+        tab.tap()
+        XCTAssertTrue(app.buttons["notes, TXT"].waitForExistence(timeout: 15), "copied files are listed")
+
+        // Live update from the laptop
+        let words = "Hello from the PC \(Int.random(in: 100...999))"
+        server("POST", "/api/clipboard", ["text": words])
+        let shown = app.staticTexts["pc clipboard text"]
+        XCTAssertTrue(shown.waitForExistence(timeout: 35))
+        XCTAssertEqual(shown.label, words)
+        XCTAssertTrue(app.buttons["Copy to iPhone"].exists)
+        app.buttons["Copy to iPhone"].tap()
+        try audit(app, "clipboard")
+
+        // Typed on the phone, sent to the laptop
+        let field = app.textFields["text to send"].exists ? app.textFields["text to send"] : app.textViews["text to send"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("Typed on the phone")
+        app.buttons["Send text"].tap()
+        var sent = false
+        for _ in 0..<20 where !sent {
+            sent = (server("GET", "/api/clipboard")["text"] as? String) == "Typed on the phone"
+            if !sent { Thread.sleep(forTimeInterval: 0.5) }
+        }
+        XCTAssertTrue(sent, "the laptop's clipboard got the typed text")
+
+        // Files copied on the laptop
+        server("POST", "/api/clipboard/files", ["paths": ["T:\\Music\\tone.flac", "T:\\notes.txt"]])
+        XCTAssertTrue(app.buttons["tone, FLAC"].waitForExistence(timeout: 35))
+        XCTAssertTrue(app.buttons["Save all to iPhone"].exists)
+
+        // History
+        let clear = app.buttons["Clear history"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 10))
+        clear.tap()
+        var confirm = app.sheets.buttons["Clear history"]
+        if !confirm.waitForExistence(timeout: 5) {
+            confirm = app.buttons.matching(identifier: "Clear history").element(boundBy: 1)
+        }
+        confirm.tap()
+        XCTAssertTrue(app.staticTexts["No history yet."].waitForExistence(timeout: 10))
+        print("OK clipboard")
+    }
+
     // MARK: Transfers
 
     func testSaveToIPhone() throws {
@@ -282,4 +363,8 @@ final class ExplorerConnectUITests: XCTestCase {
         try audit(app, "transfers")
         print("OK save to iPhone")
     }
+}
+
+private final class ResultBox: @unchecked Sendable {
+    var data: Data?
 }

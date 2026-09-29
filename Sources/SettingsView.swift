@@ -72,6 +72,14 @@ struct SettingsView: View {
                     Text("Files").accessibilityAddTraits(.isHeader)
                 }
 
+                if model.apiVersion >= 3 {
+                    Section {
+                        Toggle("Announce PC clipboard changes", isOn: $settings.announceClipboard)
+                    } header: {
+                        Text("Clipboard").accessibilityAddTraits(.isHeader)
+                    }
+                }
+
                 Section {
                     Button(model.updater.checking ? "Checking for updates" : "Check for updates") {
                         Task {
@@ -109,6 +117,7 @@ struct SettingsView: View {
         .onChange(of: settings.keepPlayingUntilReady) { model.applySettings() }
         .onChange(of: settings.resumePlayback) { model.applySettings() }
         .onChange(of: settings.announceTransfers) { model.applySettings() }
+        .onChange(of: settings.announceClipboard) { model.applySettings() }
         .onChange(of: settings.showFolderSizes) { if !settings.showFolderSizes { model.sizes.clear() } }
     }
 

@@ -40,6 +40,7 @@ final class AppModel {
     let jobs = JobCenter()
     let sizes = FolderSizes()
     let transfers = TransferCenter()
+    let clipboard = ClipboardModel()
 
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let portOverride: Int?
@@ -104,6 +105,9 @@ final class AppModel {
         transfers.clientProvider = { [weak self] in self?.client ?? ConnectClient(host: "", code: "") }
         transfers.onChange = { [weak self] in self?.changeEpoch += 1 }
         transfers.onConnectionProblem = { [weak self] error in self?.noteFailure(error) }
+        clipboard.clientProvider = { [weak self] in self?.client ?? ConnectClient(host: "", code: "") }
+        clipboard.onConnectionProblem = { [weak self] error in self?.noteFailure(error) }
+        clipboard.onSuccess = { [weak self] in self?.noteSuccess() }
         let testChunk = Int64(d.integer(forKey: "testChunkSize"))
         if testChunk > 0 {
             transfers.uploadChunkSize = testChunk
@@ -138,6 +142,7 @@ final class AppModel {
         player.keepPlayingUntilReady = settings.keepPlayingUntilReady
         player.persistEnabled = settings.resumePlayback
         transfers.announceProgress = settings.announceTransfers
+        clipboard.announceChanges = settings.announceClipboard
         if !settings.resumePlayback { Player.clearSaved() }
     }
 

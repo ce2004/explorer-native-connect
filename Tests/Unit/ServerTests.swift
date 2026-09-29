@@ -191,6 +191,48 @@ final class ServerTests: XCTestCase {
         print("OK chunked download")
     }
 
+    // MARK: Clipboard
+
+    func testClipboardBothWays() async throws {
+        let info = try await client.info()
+        guard info.apiVersion >= 3 else { throw XCTSkip("server without a clipboard") }
+        let before = try await client.clipboard()
+        let other = ConnectClient(host: "127.0.0.1", code: "12345678")
+        let text = "From the PC \(UUID().uuidString.prefix(4))"
+        Task {
+            try await Task.sleep(for: .milliseconds(500))
+            try await other.setClipboard(text: text)
+        }
+        let start = Date()
+        let changed = try await client.clipboardWait(since: before.seq)
+        XCTAssertEqual(changed.kind, "text")
+        XCTAssertEqual(changed.text, text)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "the long poll answers as soon as it changes")
+
+        try await client.copyOnPC(["T:\\notes.txt"])
+        let files = try await client.clipboard()
+        XCTAssertEqual(files.files, ["T:\\notes.txt"])
+
+        let history = try await client.clipboardHistory()
+        XCTAssertTrue(history.contains { $0.text == text })
+        print("OK clipboard both ways")
+    }
+
+    func testFilesToThePCClipboardAsOneBatch() async throws {
+        let info = try await client.info()
+        guard info.apiVersion >= 3 else { throw XCTSkip("server without a clipboard") }
+        let center = makeCenter(chunk: 1024 * 1024)
+        let a = try tempFile("first.txt", bytes: 2000)
+        let b = try tempFile("second.bin", bytes: 300_000)
+        center.sendToClipboard(files: [a, b])
+        let ids = center.records.suffix(2).map(\.id)
+        try await waitFor("the clipboard batch", timeout: 30) { ids.allSatisfy { center.record($0)?.state == .done } }
+        let state = try await client.clipboard()
+        XCTAssertEqual(state.kind, "files")
+        XCTAssertEqual(Set(state.files?.map { RemotePath.lastComponent($0) } ?? []), ["first.txt", "second.bin"])
+        print("OK clipboard files")
+    }
+
     // MARK: Playback
 
     private func makePlayer() -> Player {

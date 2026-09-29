@@ -13,6 +13,31 @@ ARGS = None
 ROOT = None
 JOBS = {}
 UPLOADS = {}
+CLIP = {"seq": 1, "kind": "empty", "text": None, "files": None, "image": None}
+CLIP_COND = threading.Condition()
+HISTORY = []
+BATCHES = {}
+CLIP_DIR = tempfile.mkdtemp(prefix="fakeclip")
+
+
+def set_clip(kind, text=None, files=None, image=None):
+    with CLIP_COND:
+        CLIP.update(seq=CLIP["seq"] + 1, kind=kind, text=text, files=files, image=image)
+        HISTORY.insert(0, {"seq": CLIP["seq"], "kind": kind, "text": text, "files": files, "time": iso(time.time())})
+        del HISTORY[50:]
+        CLIP_COND.notify_all()
+        return CLIP["seq"]
+
+
+def clip_json():
+    d = {"seq": CLIP["seq"], "kind": CLIP["kind"]}
+    if CLIP["text"] is not None:
+        d["text"] = CLIP["text"]
+    if CLIP["files"] is not None:
+        d["files"] = CLIP["files"]
+    if CLIP["image"] is not None:
+        d["imageBytes"] = len(CLIP["image"])
+    return d
 PARTIALS = tempfile.mkdtemp(prefix="fakeuploads")
 NATIVE = [".mp3", ".m4a", ".aac", ".flac", ".wav", ".aif", ".aiff", ".caf", ".alac"]
 AUDIO = NATIVE + [".ogg", ".opus", ".wma", ".mp4", ".mov", ".m4v", ".mkv", ".webm", ".cda"]
@@ -159,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         q = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         code = self.headers.get("X-Connect-Code") or q.get("code")
-        if self.command == "POST" and url.path != "/api/upload":
+        if self.command == "POST" and url.path not in ("/api/upload", "/api/clipboard/image", "/api/clipboard/send"):
             body = self.body_json()
         else:
             body = {}
@@ -173,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise HTTPError(404, "No such endpoint.")
             route(q, body)
         except HTTPError as e:
-            if url.path in ("/api/upload", "/api/upload/chunk"):
+            if url.path in ("/api/upload", "/api/upload/chunk", "/api/clipboard/image", "/api/clipboard/send"):
                 self.drain()
             self.send_json(e.status, {"error": e.message})
         except FileNotFoundError:
@@ -391,6 +416,82 @@ class Handler(BaseHTTPRequestHandler):
         shutil.move(part, target)
         self.send_json(200, {"ok": True, "path": remote(target)})
 
+    # Clipboard (v2.2)
+    def read_body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        out = bytearray()
+        while n > 0:
+            chunk = self.rfile.read(min(n, 65536))
+            if not chunk:
+                break
+            out += chunk
+            n -= len(chunk)
+        return bytes(out)
+
+    def api_clipboard(self, q, b):
+        if self.command == "POST":
+            seq = set_clip("text", text=b.get("text", ""))
+            self.send_json(200, {"ok": True, "seq": seq})
+            return
+        self.send_json(200, clip_json())
+
+    def api_clipboard_wait(self, q, b):
+        since = int(q.get("since", "0"))
+        with CLIP_COND:
+            CLIP_COND.wait_for(lambda: CLIP["seq"] > since, timeout=ARGS.clip_wait)
+            out = clip_json()
+        self.send_json(200, out)
+
+    def api_clipboard_image(self, q, b):
+        if self.command == "POST":
+            data = self.read_body()
+            if not data:
+                raise HTTPError(400, "No image.")
+            seq = set_clip("image", image=data)
+            self.send_json(200, {"ok": True, "seq": seq})
+            return
+        if CLIP["image"] is None:
+            raise HTTPError(404, "No image on the clipboard.")
+        self.send_bytes(CLIP["image"], "image/png")
+
+    def api_clipboard_files(self, q, b):
+        paths = b.get("paths", [])
+        if not paths:
+            raise HTTPError(400, "No files.")
+        seq = set_clip("files", files=paths)
+        self.send_json(200, {"ok": True, "seq": seq})
+
+    def api_clipboard_send(self, q, b):
+        name = q.get("name", "")
+        if not name or "\\" in name or "/" in name:
+            raise HTTPError(400, "That name isn't allowed.")
+        folder = os.path.join(CLIP_DIR, uuid.uuid4().hex[:8])
+        os.makedirs(folder)
+        with open(os.path.join(folder, name), "wb") as f:
+            f.write(self.read_body())
+        winpath = "C:\\Users\\Fake\\AppData\\Local\\ExplorerNative\\connect-clipboard\\" + os.path.basename(folder) + "\\" + name
+        batch = q.get("batch")
+        if batch:
+            BATCHES.setdefault(batch, []).append(winpath)
+            self.send_json(200, {"ok": True, "path": winpath})
+            return
+        seq = set_clip("files", files=[winpath])
+        self.send_json(200, {"ok": True, "path": winpath, "seq": seq})
+
+    def api_clipboard_send_commit(self, q, b):
+        files = BATCHES.pop(b.get("batch", ""), None)
+        if not files:
+            raise HTTPError(404, "No such batch.")
+        seq = set_clip("files", files=files)
+        self.send_json(200, {"ok": True, "seq": seq})
+
+    def api_clipboard_history(self, q, b):
+        self.send_json(200, HISTORY)
+
+    def api_clipboard_history_clear(self, q, b):
+        HISTORY.clear()
+        self.send_json(200, {"ok": True})
+
     # Sizes and details
     def api_size(self, q, b):
         path = q.get("path", "")
@@ -532,7 +633,8 @@ def main():
     ap.add_argument("--port", type=int, default=47810)
     ap.add_argument("--code", default="12345678")
     ap.add_argument("--root")
-    ap.add_argument("--api", type=int, default=2)
+    ap.add_argument("--api", type=int, default=3)
+    ap.add_argument("--clip-wait", type=float, default=25, help="seconds a clipboard long poll waits")
     ap.add_argument("--delay", type=float, default=0, help="seconds to stall every listing")
     ap.add_argument("--chunk-delay", type=float, default=0, help="seconds to stall after each upload chunk")
     ap.add_argument("--verbose", action="store_true")

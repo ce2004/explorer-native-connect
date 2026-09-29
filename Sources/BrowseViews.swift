@@ -314,6 +314,9 @@ struct FolderView: View {
                     Label("Share", systemImage: "square.and.arrow.up")
                 }
             }
+            if model.apiVersion >= 3 && editable {
+                Button { copyOnPC(e) } label: { Label("Copy on PC", systemImage: "doc.on.clipboard") }
+            }
             if editable {
                 Button { startSelecting(e) } label: { Label("Select", systemImage: "checkmark.circle") }
                 Button(role: .destructive) { askDelete([e]) } label: { Label("Delete", systemImage: "trash") }
@@ -387,6 +390,21 @@ struct FolderView: View {
             model.player.play(tracks: tracks, client: model.client)
         } else {
             opening = OpenFile(path: path(e), name: e.name, size: e.size)
+        }
+    }
+
+    /// Puts the file on the laptop's clipboard, so Ctrl+V there pastes it.
+    private func copyOnPC(_ e: Entry) {
+        let client = model.client
+        let p = path(e)
+        Task {
+            do {
+                try await client.copyOnPC([p])
+                Announce.say("\(e.name) is on the PC clipboard.")
+            } catch {
+                model.noteFailure(error)
+                Announce.say(ConnectError.message(for: error))
+            }
         }
     }
 

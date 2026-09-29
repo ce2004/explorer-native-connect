@@ -111,6 +111,8 @@ final class FormatTests: XCTestCase {
         XCTAssertEqual(Labels.drive(Drive(name: "Z:\\", label: "Share", kind: "Network", free: 10 * 1_073_741_824, size: 20 * 1_073_741_824)),
                        "Share, Z:, network drive, 10 GB free of 20 GB")
         XCTAssertEqual(Labels.driveTitle(music), "Music (G:)")
+        let drive = Drive(name: "G:\\", label: "Google Drive", kind: "GoogleDrive", free: tb * 4, size: tb * 5)
+        XCTAssertEqual(Labels.drive(drive), "Google Drive, G:, 4 TB free of 5 TB", "the live server's Drive kind isn't read out")
     }
 
     func testFolderSizeSpeech() {
@@ -398,6 +400,35 @@ final class QueueTests: XCTestCase {
         XCTAssertEqual(back.index, 0)
         XCTAssertEqual(back.position, 42.5)
         XCTAssertTrue(back.playing)
+    }
+}
+
+final class ClipboardTests: XCTestCase {
+    func testPreviewSqueezesAndCuts() {
+        XCTAssertEqual(ClipText.preview("Hello\n\n  world\tagain"), "Hello world again")
+        let long = String(repeating: "abcdefghij", count: 10)
+        XCTAssertEqual(ClipText.preview(long), String(long.prefix(60)) + "…")
+    }
+
+    func testSummariesAndAnnouncements() {
+        XCTAssertEqual(ClipText.files(["C:\\a.txt"]), "1 file: a.txt")
+        XCTAssertEqual(ClipText.files(["C:\\a.txt", "C:\\b.flac"]), "2 files: a.txt, b.flac")
+        XCTAssertEqual(ClipText.files(["C:\\a", "C:\\b", "C:\\c", "C:\\d"]), "4 files: a, b and 2 more")
+        XCTAssertEqual(ClipText.announcement(ClipboardState(seq: 2, kind: "text", text: "Meeting at 3\nRoom 12")), "PC clipboard: Meeting at 3 Room 12")
+        XCTAssertEqual(ClipText.announcement(ClipboardState(seq: 3, kind: "image", imageBytes: 10)), "PC clipboard: An image")
+        XCTAssertNil(ClipText.announcement(ClipboardState(seq: 4, kind: "empty")))
+    }
+
+    func testDecoding() throws {
+        let state = try JSONDecoder().decode(ClipboardState.self, from: Data(#"{"seq":7,"kind":"files","files":["G:\\x.flac"]}"#.utf8))
+        XCTAssertEqual(state, ClipboardState(seq: 7, kind: "files", files: ["G:\\x.flac"]))
+        let history = try JSONDecoder().decode([ClipboardItem].self, from: Data(#"""
+        [{"seq":9,"kind":"text","text":"hi","files":null,"time":"2026-09-28T12:00:00.123Z"},{"seq":8,"kind":"image","time":"2026-09-28T11:00:00Z"}]
+        """#.utf8))
+        XCTAssertEqual(history.map(\.seq), [9, 8])
+        XCTAssertEqual(history[0].text, "hi")
+        XCTAssertNil(history[0].files)
+        XCTAssertNotNil(history[1].time)
     }
 }
 

@@ -22,6 +22,8 @@ struct TransferRecord: Codable, Identifiable, Equatable {
     var sourceBookmark: Data?
     /// A copy kept in the app's own storage (from Photos), relative to the staging folder.
     var stagedName: String?
+    /// Going to the PC clipboard rather than a folder; files in one batch land on the clipboard together.
+    var clipboardBatch: String?
     var uploadID: String?
     var jobID: String?
     var resultPath: String?
@@ -41,7 +43,7 @@ enum TransferText {
         var parts = [r.name]
         switch r.state {
         case .done:
-            parts.append(r.direction == .upload ? "sent" : "saved to iPhone")
+            parts.append(r.direction == .upload ? (r.clipboardBatch != nil ? "on the PC clipboard" : "sent") : "saved to iPhone")
             return parts.joined(separator: ", ")
         case .failed:
             parts.append("failed")
@@ -54,7 +56,7 @@ enum TransferText {
         case .waiting: parts.append("waiting for the laptop")
         case .finishing: parts.append("finishing")
         case .sendingToDrive: parts.append("sending to Google Drive")
-        case .running: parts.append(r.direction == .upload ? "sending" : "saving to iPhone")
+        case .running: parts.append(r.direction == .upload ? (r.clipboardBatch != nil ? "sending to the PC clipboard" : "sending") : "saving to iPhone")
         }
         if r.size > 0 {
             parts.append("\(TransferMath.percent(r.done, r.size)) percent")
@@ -213,6 +215,7 @@ final class TransferCenter {
     @ObservationIgnored private var lastSaved = Date.distantPast
     @ObservationIgnored private var lastAnnouncement = Date.distantPast
     @ObservationIgnored private var retryDelay: [String: Double] = [:]
+    @ObservationIgnored private var committing: Set<String> = []
     @ObservationIgnored private let engine = DownloadEngine.shared
 
     nonisolated static var baseFolder: URL {
@@ -326,6 +329,83 @@ final class TransferCenter {
             startUploadWorker(r.id)
         }
         announceStart(staged.count, upload: true)
+    }
+
+    /// Phone files for the PC clipboard: sent together, then put on the clipboard in one go so Ctrl+V pastes them all.
+    func sendToClipboard(files: [URL]) {
+        let batch = UUID().uuidString
+        var staged: [(name: String, stagedName: String)] = []
+        for url in files {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            let stagedName = UUID().uuidString + "-" + url.lastPathComponent
+            if (try? FileManager.default.copyItem(at: url, to: Self.stagingFolder.appendingPathComponent(stagedName))) != nil {
+                staged.append((name: url.lastPathComponent, stagedName: stagedName))
+            } else {
+                Announce.say("Can't read \(url.lastPathComponent).")
+            }
+        }
+        addClipboard(staged, batch: batch)
+    }
+
+    func sendToClipboard(staged: [(name: String, stagedName: String)]) {
+        addClipboard(staged, batch: UUID().uuidString)
+    }
+
+    private func addClipboard(_ staged: [(name: String, stagedName: String)], batch: String) {
+        guard !staged.isEmpty else { return }
+        for item in staged {
+            let url = Self.stagingFolder.appendingPathComponent(item.stagedName)
+            let size = Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            var r = TransferRecord(direction: .upload, name: item.name, size: size)
+            r.stagedName = item.stagedName
+            r.clipboardBatch = batch
+            add(r)
+            startUploadWorker(r.id)
+        }
+        Announce.say(staged.count == 1 ? "Sending 1 file to the PC clipboard." : "Sending \(staged.count) files to the PC clipboard.")
+    }
+
+    private func clipboardUpload(_ id: String, _ url: URL, _ client: ConnectClient, _ batch: String) async throws {
+        guard let r = record(id), let request = client.clipboardSendRequest(name: r.name, batch: batch) else { return }
+        let watcher = ChunkProgress { [weak self] sent in
+            Task { @MainActor in self?.progressed(id, to: sent) }
+        }
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await ConnectClient.session.upload(for: request, fromFile: url, delegate: watcher)
+        } catch let e as URLError where e.code == .cancelled {
+            throw CancellationError()
+        } catch let e as URLError {
+            throw ConnectError.from(urlError: e, host: client.host)
+        }
+        let _: ConnectClient.Ignored = try ConnectClient.decode(data, response)
+        progressed(id, to: r.size)
+        update(id) { $0.state = .finishing }
+        await commitIfReady(batch, client)
+    }
+
+    /// When every file of a batch has arrived, put them all on the PC clipboard.
+    private func commitIfReady(_ batch: String, _ client: ConnectClient) async {
+        let members = records.filter { $0.clipboardBatch == batch }
+        guard !members.isEmpty, members.allSatisfy({ $0.state == .finishing || $0.isFinished }),
+              members.contains(where: { $0.state == .finishing }), !committing.contains(batch) else { return }
+        committing.insert(batch)
+        defer { committing.remove(batch) }
+        do {
+            try await client.commitClipboardSend(batch: batch)
+            let sent = members.filter { $0.state == .finishing }
+            for m in sent {
+                update(m.id) { $0.state = .done }
+                removeStaged(m)
+                rates[m.id] = nil
+            }
+            Announce.say(sent.count == 1 ? "\(sent[0].name) is on the PC clipboard. Press Control V to paste it."
+                                         : "\(sent.count) files are on the PC clipboard. Press Control V to paste them.")
+            onChange?()
+        } catch {
+            for m in members where m.state == .finishing { failed(m.id, error) }
+        }
     }
 
     func download(_ items: [(path: String, name: String, size: Int64)]) {
@@ -520,6 +600,15 @@ final class TransferCenter {
         }
         let (url, scoped) = source
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let batch = r.clipboardBatch {
+            do {
+                try await clipboardUpload(id, url, client, batch)
+            } catch is CancellationError {
+            } catch {
+                if !Task.isCancelled { failed(id, error) }
+            }
+            return
+        }
         do {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
